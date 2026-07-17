@@ -1,0 +1,81 @@
+/* glimmer 全局样式 - 温暖治愈主题 */
+
+/* Reset */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Arial, sans-serif;
+  font-size: 14px;
+  color: #303133;
+  background: #fffaf0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  color: #f5a623;
+  text-decoration: none;
+}
+a:hover {
+  color: #e89a1a;
+}
+
+ul,
+ol {
+  list-style: none;
+}
+
+/* 主题色变量 - 温暖橙黄色系 */
+:root {
+  --glimmer-primary: #f5a623;
+  --glimmer-primary-light: #ffd970;
+  --glimmer-primary-dark: #e89a1a;
+  --glimmer-bg: #fffaf0;
+  --glimmer-bg-card: #ffffff;
+  --glimmer-text: #303133;
+  --glimmer-text-secondary: #606266;
+  --glimmer-text-placeholder: #909399;
+  --glimmer-border: #f0e6d2;
+  --glimmer-success: #67c23a;
+  --glimmer-warning: #e6a23c;
+  --glimmer-danger: #f56c6c;
+  --glimmer-info: #909399;
+}
+
+/* 覆盖 Element Plus 主题色为温暖橙黄 */
+:root {
+  --el-color-primary: #f5a623;
+  --el-color-primary-light-3: #f8b94d;
+  --el-color-primary-light-5: #fad084;
+  --el-color-primary-light-7: #fce6b8;
+  --el-color-primary-light-8: #fdf0d4;
+  --el-color-primary-light-9: #fef7ea;
+  --el-color-primary-dark-2: #c48718;
+}
+
+/* 滚动条美化 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #f0e6d2;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #e0d0a8;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}

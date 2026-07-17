@@ -1,0 +1,96 @@
+server:
+  port: 8080
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+spring:
+  application:
+    name: glimmer-backend
+  datasource:
+    url: jdbc:mysql://localhost:3306/glimmer?useSSL=false&serverTimezone=Asia/Shanghai
+    username: root  # 直接写死，因为本地和生产都用 root
+    password: ${DB_PASSWORD:}  # 只有密码用环境变量
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 10
+      minimum-idle: 2
+      connection-timeout: 30000
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: Asia/Shanghai
+  devtools:
+    restart:
+      enabled: true
+      additional-paths: src/main/java
+      exclude: static/**,public/**,templates/**
+    livereload:
+      enabled: true
+      port: 35729
+
+# MyBatis-Plus 配置（不启用逻辑删除）
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: null
+
+# glimmer 业务配置
+glimmer:
+  jwt:
+    # JWT 密钥，生产环境务必通过环境变量 JWT_SECRET 注入并修改默认值
+    secret: ${JWT_SECRET}
+    # 过期时间 24 小时（毫秒）
+    expiration: 86400000
+  deepseek:
+    # DeepSeek API 地址（见开发文档 §8.1 / §8.3）
+    api-url: https://api.deepseek.com/v1/chat/completions
+    # DeepSeek API Key，部署时通过环境变量 DEEPSEEK_API_KEY 注入
+    api-key: ${DEEPSEEK_API_KEY:}
+    # 模型名称，默认 deepseek-v3
+    model: deepseek-v3
+    # 上下文消息最大条数（见开发文档 §3.4.4）
+    max-context-messages: 20
+    # 系统提示词（见开发文档 §3.4.4 / §8.3）
+    system-prompt: "你是 glimmer 网站的温暖倾听者，用温柔、有同理心的语言陪伴用户。回答要有共情力，避免说教，鼓励用户表达感受。"
+  garden:
+    # 花园亮度阈值（见开发文档 §2.7.2）
+    brightness-thresholds: 0,10,30,60,100,200
+  report:
+    # 封禁阈值（见开发文档 §2.8.1）
+    ban-threshold: 7
+  upload:
+    # 上传文件存储路径（见开发文档 §8.3），生产环境通过 UPLOAD_PATH 环境变量注入
+    path: ${UPLOAD_PATH:./uploads}
+    allowed-types: png,jpg,jpeg,gif,webp
+    max-size: 5MB
+
+# Actuator 健康检查配置（供 Docker 健康检查使用）
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+  endpoint:
+    health:
+      show-details: never
+
+# SpringDoc OpenAPI 3 配置
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+  api-docs:
+    path: /v3/api-docs
+  packages-to-scan: com.glimmer.controller
+
+logging:
+  level:
+    root: INFO
+    com.glimmer: DEBUG
+    org.springframework.security: INFO
