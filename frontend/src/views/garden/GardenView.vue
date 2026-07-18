@@ -9,12 +9,29 @@ import {
   getFlower
 } from '@/api/garden'
 import { useUserStore } from '@/stores/user'
+import FireflyCanvas from '@/components/FireflyCanvas.vue'
 
 const userStore = useUserStore()
 const user = computed(() => userStore.userInfo || {})
 
 const totalFirefly = computed(() => user.value.totalFirefly ?? 0)
 const fireflyBalance = computed(() => user.value.fireflyBalance ?? 0)
+
+function calculateFireflyCount(total) {
+  const v = Number(total) || 0
+  if (v === 0) return 0
+  if (v <= 5) return Math.floor(Math.random() * 4) + 5
+  if (v <= 15) return Math.floor(Math.random() * 6) + 15
+  if (v <= 30) return Math.floor(Math.random() * 11) + 30
+  if (v <= 50) return Math.floor(Math.random() * 21) + 50
+  if (v <= 100) return Math.floor(Math.random() * 41) + 80
+  return Math.floor(Math.random() * 51) + 150
+}
+const fireflyCount = ref(calculateFireflyCount(totalFirefly.value))
+import { watch } from 'vue'
+watch(totalFirefly, (newVal) => {
+  fireflyCount.value = calculateFireflyCount(newVal)
+})
 
 // === 亮度等级（参考 HomeView）===
 function getBrightnessLevel(total) {
@@ -284,7 +301,11 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="garden-page">
+  <div class="garden-page" :class="{ 'dark-mode': brightnessLevel <= 2 }">
+    <!-- 背景萤火虫层 -->
+    <div class="firefly-container">
+      <FireflyCanvas :fireflyCount="fireflyCount" :brightnessLevel="brightnessLevel" />
+    </div>
     <!-- 顶部信息区 -->
     <div class="garden-banner" :style="gardenStyle">
       <div class="banner-title">🌷 萤火花园</div>
@@ -640,5 +661,78 @@ onMounted(() => {
 .cost-label {
   color: #909399;
   margin-right: 6px;
+}
+
+.firefly-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.garden-page {
+  position: relative;
+  min-height: 100vh;
+  z-index: 2;
+}
+
+.garden-banner {
+  position: relative;
+  z-index: 3;
+}
+
+.section-card {
+  position: relative;
+  z-index: 3;
+}
+
+.garden-page.dark-mode {
+  background: linear-gradient(180deg, #0a0a12 0%, #121220 50%, #0a0a12 100%);
+}
+
+.dark-mode .section-card {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.dark-mode .section-title {
+  color: #e8e8e8;
+}
+
+.dark-mode .flower-name,
+.dark-mode .shop-name {
+  color: #e8e8e8;
+}
+
+.dark-mode .shop-desc {
+  color: #a0a0a0;
+}
+
+.dark-mode .stage-icons {
+  background: rgba(255, 247, 234, 0.1);
+}
+
+.dark-mode .stage-placeholder {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: rgba(245, 166, 35, 0.5);
+}
+
+.dark-mode .stage-text {
+  color: #a0a0a0;
+}
+
+.dark-mode .progress-label {
+  color: #a0a0a0;
+}
+
+.dark-mode .flower-meta {
+  color: #a0a0a0;
+}
+
+.dark-mode .el-empty__text {
+  color: #a0a0a0;
 }
 </style>
