@@ -29,4 +29,6 @@ public class Campfire {
     private String status;
 
     private LocalDateTime createdAt;
+
+    private LocalDateTime lastActiveAt;
 }

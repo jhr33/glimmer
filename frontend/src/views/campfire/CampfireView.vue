@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   getCampfires,
@@ -8,7 +8,8 @@ import {
   getCampfire,
   getCampfireMessages,
   joinCampfire,
-  leaveCampfire
+  leaveCampfire,
+  extinguishCampfire
 } from '@/api/campfire'
 import { createStompClient } from '@/utils/stomp'
 import { useUserStore } from '@/stores/user'
@@ -62,6 +63,7 @@ const stompConnected = ref(false)
 const stompConnecting = ref(false)
 const subscription = ref(null)
 const messageListRef = ref(null)
+const messageLoading = ref(false)
 
 function pickList(data) {
   if (!data) return []
@@ -82,6 +84,11 @@ function isCreator(c) {
   const uid = currentUserId.value
   if (uid == null) return false
   return c.creatorId === uid || c.creator_id === uid
+}
+
+function canExtinguish(c) {
+  if (!c) return false
+  return isCreator(c) && c.type !== 'default' && c.type !== 'system'
 }
 
 function typeLabel(t) {
@@ -131,15 +138,16 @@ async function handleCreate() {
   }
   createLoading.value = true
   try {
-    await createCampfire({
+    const res = await createCampfire({
       name: createForm.name.trim(),
       maxMembers: createForm.maxMembers
     })
-    ElMessage.success('篝火已创建')
     createVisible.value = false
-    await fetchList()
+    ElMessage.success('创建成功！正在进入篝火...')
+    await enterCampfire(res.data)
   } catch (e) {
     handleBanned(e)
+    await fetchList()
   } finally {
     createLoading.value = false
   }
@@ -152,23 +160,7 @@ async function enterCampfire(campfire) {
   messages.value = []
   inputContent.value = ''
   try {
-      try {
-        await joinCampfire(id)
-      } catch (e) {
-        if (e?.code === 4010) {
-          ElMessage.info('已加入该篝火')
-        } else if (e?.code === 4011) {
-          ElMessage.error('篝火人数已满')
-          handleBanned(e)
-          return
-        } else if (e?.code === 4015) {
-          handleBanned(e)
-          ElMessage.error('账号已被封禁，无法进入')
-          return
-        } else {
-          throw e
-        }
-      }
+    await joinCampfire(id)
     const res = await getCampfire(id)
     activeCampfire.value = res.data
     await loadMessages(id)
@@ -224,9 +216,12 @@ function connectStomp(campfireId) {
       onDisconnect: () => {
         console.log('WebSocket连接断开')
         stompConnected.value = false
+        stompConnecting.value = false
       },
       onError: (frame) => {
         console.error('STOMP错误:', frame)
+        stompConnected.value = false
+        stompConnecting.value = false
         const msg = frame?.headers?.message || frame?.body || '服务器返回错误'
         if (!isBanned.value) {
           ElMessage.warning(`篝火消息：${msg}`)
@@ -235,6 +230,7 @@ function connectStomp(campfireId) {
       onWebSocketError: (evt) => {
         console.error('WebSocket错误:', evt)
         stompConnected.value = false
+        stompConnecting.value = false
       }
     })
     stompClient.value = client
@@ -268,9 +264,7 @@ async function leaveCurrentCampfire() {
   const c = activeCampfire.value
   if (!c) return
   try {
-    if (!isCreator(c)) {
-      await leaveCampfire(campfireIdOf(c))
-    }
+    await leaveCampfire(campfireIdOf(c))
   } catch (e) {
     handleBanned(e)
   } finally {
@@ -281,9 +275,29 @@ async function leaveCurrentCampfire() {
   }
 }
 
-function backToList() {
-  leaveCurrentCampfire()
-  fetchList()
+async function backToList() {
+  await leaveCurrentCampfire()
+  await fetchList()
+}
+
+async function handleExtinguish() {
+  const c = activeCampfire.value
+  if (!c) return
+  try {
+    await ElMessageBox.confirm('确定要熄灭这个篝火吗？熄灭后所有成员将被移出，篝火将不再可见。', '熄灭篝火', {
+      confirmButtonText: '确定熄灭',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    await extinguishCampfire(campfireIdOf(c))
+    ElMessage.success('篝火已熄灭')
+    await leaveCurrentCampfire()
+    await fetchList()
+  } catch (e) {
+    if (e !== 'cancel') {
+      handleBanned(e)
+    }
+  }
 }
 
 function sendMessage() {
@@ -339,6 +353,11 @@ onMounted(() => {
     isBanned.value = true
   }
   fetchList()
+})
+
+onBeforeRouteLeave(async (to, from, next) => {
+  await leaveCurrentCampfire()
+  next()
 })
 
 onUnmounted(() => {
@@ -416,6 +435,14 @@ onUnmounted(() => {
         </div>
         <div class="chat-actions">
           <el-button size="small" @click="backToList">返回列表</el-button>
+          <el-button
+            v-if="canExtinguish(activeCampfire)"
+            size="small"
+            type="danger"
+            @click="handleExtinguish"
+          >
+            熄灭篝火
+          </el-button>
         </div>
       </div>
 

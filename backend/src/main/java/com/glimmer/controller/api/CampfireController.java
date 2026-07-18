@@ -85,4 +85,12 @@ public class CampfireController {
         campfireService.leaveCampfire(userId, campfireId);
         return Result.success();
     }
+
+    @Operation(summary = "熄灭篝火（仅创建者可操作，系统默认篝火不可熄灭）")
+    @PostMapping("/{campfireId}/extinguish")
+    public Result<Void> extinguishCampfire(@PathVariable Long campfireId) {
+        Long userId = SecurityUtils.getCurrentUserId();
+        campfireService.extinguishCampfire(userId, campfireId);
+        return Result.success();
+    }
 }

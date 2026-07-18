@@ -29,3 +29,8 @@ export function joinCampfire(campfireId) {
 export function leaveCampfire(campfireId) {
   return request({ url: `/campfires/${campfireId}/leave`, method: 'post' })
 }
+
+// 熄灭篝火（仅创建者可操作）
+export function extinguishCampfire(campfireId) {
+  return request({ url: `/campfires/${campfireId}/extinguish`, method: 'post' })
+}

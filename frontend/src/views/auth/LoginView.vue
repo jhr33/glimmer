@@ -108,7 +108,7 @@ function goRegister() {
         </el-form-item>
         <div class="auth-footer">
           还没有账号？
-          <el-link type="primary" :underline="false" @click="goRegister">立即注册</el-link>
+          <el-link type="primary" underline="never" @click="goRegister">立即注册</el-link>
         </div>
       </el-form>
     </div>

@@ -108,6 +108,7 @@ public class CampfireServiceImpl implements CampfireService {
         campfire.setCreatorId(userId);
         campfire.setStatus("active");
         campfire.setCreatedAt(now);
+        campfire.setLastActiveAt(now);
         campfireMapper.insert(campfire);
 
         // 6. 创建者自动加入
@@ -173,9 +174,10 @@ public class CampfireServiceImpl implements CampfireService {
         if (!"active".equals(campfire.getStatus())) {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "篝火不可加入");
         }
-        // 校验未加入
+        // 校验未加入（已加入则静默返回成功）
         if (isMember(userId, campfireId)) {
-            throw new BusinessException(ErrorCode.CONFLICT, "已加入该篝火");
+            log.info("用户已加入篝火，静默处理: userId={}, campfireId={}", userId, campfireId);
+            return;
         }
         // 校验人数未满
         Long memberCount = countMembers(campfireId);
@@ -188,6 +190,11 @@ public class CampfireServiceImpl implements CampfireService {
         member.setUserId(userId);
         member.setJoinedAt(LocalDateTime.now());
         campfireMemberMapper.insert(member);
+        
+        // 更新最后活跃时间
+        campfire.setLastActiveAt(LocalDateTime.now());
+        campfireMapper.updateById(campfire);
+        
         log.info("加入篝火成功: userId={}, campfireId={}", userId, campfireId);
     }
 
@@ -198,10 +205,6 @@ public class CampfireServiceImpl implements CampfireService {
         if (campfire == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "篝火不存在");
         }
-        // 创建者不允许退出（避免无人管理）
-        if (userId.equals(campfire.getCreatorId())) {
-            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "创建者不可退出篝火");
-        }
         // 删除成员
         int deleted = campfireMemberMapper.delete(new LambdaQueryWrapper<CampfireMember>()
                 .eq(CampfireMember::getCampfireId, campfireId)
@@ -209,7 +212,35 @@ public class CampfireServiceImpl implements CampfireService {
         if (deleted == 0) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "未加入该篝火");
         }
+        
+        // 更新最后活跃时间
+        campfire.setLastActiveAt(LocalDateTime.now());
+        campfireMapper.updateById(campfire);
+        
         log.info("退出篝火成功: userId={}, campfireId={}", userId, campfireId);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void extinguishCampfire(Long userId, Long campfireId) {
+        Campfire campfire = campfireMapper.selectById(campfireId);
+        if (campfire == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "篝火不存在");
+        }
+        if (!userId.equals(campfire.getCreatorId())) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "仅创建者可熄灭篝火");
+        }
+        if ("default".equals(campfire.getType())) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "系统默认篝火不可熄灭");
+        }
+        if (!"active".equals(campfire.getStatus())) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "篝火状态异常");
+        }
+        campfire.setStatus("extinguished");
+        campfireMapper.updateById(campfire);
+        campfireMemberMapper.delete(new LambdaQueryWrapper<CampfireMember>()
+                .eq(CampfireMember::getCampfireId, campfireId));
+        log.info("篝火已熄灭: userId={}, campfireId={}", userId, campfireId);
     }
 
     @Override

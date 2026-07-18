@@ -6,7 +6,8 @@ import { Client } from '@stomp/stompjs'
 const WS_BASE_URL = '/ws-campfire'
 
 export function buildBrokerUrl(token) {
-  const base = WS_BASE_URL
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const base = `${protocol}//${window.location.host}/ws-campfire`
   return token ? `${base}?token=${encodeURIComponent(token)}` : base
 }
 
@@ -24,9 +25,16 @@ export function createStompClient(options = {}) {
 
   const client = new Client({
     webSocketFactory: () => {
+      console.log('创建WebSocket连接: url=', url)
       const ws = new WebSocket(url)
       ws.onerror = (evt) => {
-        console.error('WebSocket原生错误:', evt)
+        console.error('WebSocket原生错误:', evt, 'evt.message:', evt.message)
+      }
+      ws.onclose = (evt) => {
+        console.error('WebSocket连接关闭:', evt.code, evt.reason)
+      }
+      ws.onopen = () => {
+        console.log('WebSocket连接已打开')
       }
       return ws
     },

@@ -14,7 +14,7 @@ import org.springframework.stereotype.Component;
 public class JwtProperties {
 
     /** JWT 密钥，建议通过环境变量 JWT_SECRET 注入 */
-    private String secre;
+    private String secret;
 
     /** 过期时间（毫秒），默认 24 小时 */
     private long expiration = 86400000L;
