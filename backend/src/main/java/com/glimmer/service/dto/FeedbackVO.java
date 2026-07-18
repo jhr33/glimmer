@@ -23,4 +23,6 @@ public class FeedbackVO {
     private String type;
     /** 关联举报ID（申诉时） */
     private Long reportId;
+    /** 关联举报信息（申诉时） */
+    private ReportVO report;
 }

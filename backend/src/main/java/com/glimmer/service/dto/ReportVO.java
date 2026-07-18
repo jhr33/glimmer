@@ -28,4 +28,8 @@ public class ReportVO {
     private String penaltyType;
     /** 申诉次数 */
     private Integer appealCount;
+    /** 被举报内容 */
+    private String reportedContent;
+    /** 发言场所 */
+    private String location;
 }

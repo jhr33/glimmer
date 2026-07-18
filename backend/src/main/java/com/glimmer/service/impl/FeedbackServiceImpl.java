@@ -6,15 +6,24 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.entity.CampfireMessage;
+import com.glimmer.entity.DriftBottle;
+import com.glimmer.entity.DriftBottleReply;
 import com.glimmer.entity.Feedback;
+import com.glimmer.entity.Letter;
 import com.glimmer.entity.Report;
 import com.glimmer.entity.User;
+import com.glimmer.mapper.CampfireMessageMapper;
+import com.glimmer.mapper.DriftBottleMapper;
+import com.glimmer.mapper.DriftBottleReplyMapper;
 import com.glimmer.mapper.FeedbackMapper;
+import com.glimmer.mapper.LetterMapper;
 import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.FeedbackService;
 import com.glimmer.service.NotificationService;
 import com.glimmer.service.dto.FeedbackVO;
+import com.glimmer.service.dto.ReportVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -22,6 +31,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -35,20 +45,32 @@ import java.util.stream.Collectors;
 @Service
 public class FeedbackServiceImpl implements FeedbackService {
 
-    private static final int MAX_APPEALS_PER_DAY = 7;
+    private static final int MAX_APPEALS_PER_DAY = 15;
     private static final int MAX_APPEALS_PER_REPORT = 3;
 
     private final FeedbackMapper feedbackMapper;
     private final UserMapper userMapper;
     private final NotificationService notificationService;
     private final ReportMapper reportMapper;
+    private final DriftBottleMapper driftBottleMapper;
+    private final DriftBottleReplyMapper driftBottleReplyMapper;
+    private final LetterMapper letterMapper;
+    private final CampfireMessageMapper campfireMessageMapper;
 
     public FeedbackServiceImpl(FeedbackMapper feedbackMapper, UserMapper userMapper,
-                               NotificationService notificationService, ReportMapper reportMapper) {
+                               NotificationService notificationService, ReportMapper reportMapper,
+                               DriftBottleMapper driftBottleMapper,
+                               DriftBottleReplyMapper driftBottleReplyMapper,
+                               LetterMapper letterMapper,
+                               CampfireMessageMapper campfireMessageMapper) {
         this.feedbackMapper = feedbackMapper;
         this.userMapper = userMapper;
         this.notificationService = notificationService;
         this.reportMapper = reportMapper;
+        this.driftBottleMapper = driftBottleMapper;
+        this.driftBottleReplyMapper = driftBottleReplyMapper;
+        this.letterMapper = letterMapper;
+        this.campfireMessageMapper = campfireMessageMapper;
     }
 
     @Override
@@ -143,6 +165,7 @@ public class FeedbackServiceImpl implements FeedbackService {
     public PageResult<FeedbackVO> getFeedbackList(String status, int page, int size) {
         Page<Feedback> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<Feedback> wrapper = new LambdaQueryWrapper<Feedback>()
+                .eq(Feedback::getType, "feedback")
                 .eq(StringUtils.hasText(status), Feedback::getStatus, status)
                 .orderByDesc(Feedback::getCreatedAt);
 
@@ -266,6 +289,31 @@ public class FeedbackServiceImpl implements FeedbackService {
             Report report = reportMapper.selectById(feedback.getReportId());
             if (report != null) {
                 vo.setReportId(report.getId());
+                Map<Long, User> reportUserMap = new HashMap<>();
+                if (report.getReporterId() != null) {
+                    User reporter = userMapper.selectById(report.getReporterId());
+                    if (reporter != null) reportUserMap.put(reporter.getId(), reporter);
+                }
+                if (report.getTargetUserId() != null) {
+                    User target = userMapper.selectById(report.getTargetUserId());
+                    if (target != null) reportUserMap.put(target.getId(), target);
+                }
+                ReportVO reportVO = new ReportVO();
+                reportVO.setId(report.getId());
+                reportVO.setReporterId(report.getReporterId());
+                reportVO.setReporterUsername(reportUserMap.get(report.getReporterId()) == null ? null : reportUserMap.get(report.getReporterId()).getUsername());
+                reportVO.setTargetUserId(report.getTargetUserId());
+                reportVO.setTargetUsername(reportUserMap.get(report.getTargetUserId()) == null ? null : reportUserMap.get(report.getTargetUserId()).getUsername());
+                reportVO.setTargetType(report.getTargetType());
+                reportVO.setTargetId(report.getTargetId());
+                reportVO.setContent(report.getContent());
+                reportVO.setStatus(report.getStatus());
+                reportVO.setResult(report.getResult());
+                reportVO.setPenaltyType(report.getPenaltyType());
+                reportVO.setAppealCount(report.getAppealCount());
+                reportVO.setReportedContent(getReportedContent(report.getTargetType(), report.getTargetId()));
+                reportVO.setLocation(describeLocation(report.getTargetType(), report.getTargetId()));
+                vo.setReport(reportVO);
             }
         }
         return vo;
@@ -363,5 +411,79 @@ public class FeedbackServiceImpl implements FeedbackService {
             case "ban": return "永久封禁";
             default: return penaltyType;
         }
+    }
+
+    private String getReportedContent(String targetType, Long targetId) {
+        try {
+            switch (targetType) {
+                case "drift_bottle": {
+                    DriftBottle bottle = driftBottleMapper.selectById(targetId);
+                    return bottle != null ? truncateContent(bottle.getContent()) : "未知内容";
+                }
+                case "bottle_reply": {
+                    DriftBottleReply reply = driftBottleReplyMapper.selectById(targetId);
+                    return reply != null ? truncateContent(reply.getContent()) : "未知内容";
+                }
+                case "letter": {
+                    Letter letter = letterMapper.selectById(targetId);
+                    return letter != null ? truncateContent(letter.getContent()) : "未知内容";
+                }
+                case "campfire_message": {
+                    CampfireMessage message = campfireMessageMapper.selectById(targetId);
+                    return message != null ? truncateContent(message.getContent()) : "未知内容";
+                }
+                default:
+                    return "未知内容";
+            }
+        } catch (Exception e) {
+            log.warn("获取被举报内容失败: targetType={}, targetId={}", targetType, targetId, e);
+            return "未知内容";
+        }
+    }
+
+    private String describeLocation(String targetType, Long targetId) {
+        try {
+            switch (targetType) {
+                case "drift_bottle":
+                    return "漂流瓶广场";
+                case "bottle_reply": {
+                    DriftBottleReply reply = driftBottleReplyMapper.selectById(targetId);
+                    if (reply != null && reply.getBottleId() != null) {
+                        return "漂流瓶#" + reply.getBottleId();
+                    }
+                    return "漂流瓶回复";
+                }
+                case "letter": {
+                    Letter letter = letterMapper.selectById(targetId);
+                    if (letter != null && letter.getReceiverId() != null) {
+                        return "私信#" + letter.getReceiverId();
+                    }
+                    return "信件";
+                }
+                case "campfire_message": {
+                    CampfireMessage message = campfireMessageMapper.selectById(targetId);
+                    if (message != null && message.getCampfireId() != null) {
+                        return "篝火#" + message.getCampfireId();
+                    }
+                    return "篝火";
+                }
+                default:
+                    return targetType;
+            }
+        } catch (Exception e) {
+            log.warn("获取发言场所失败: targetType={}, targetId={}", targetType, targetId, e);
+            return targetType;
+        }
+    }
+
+    private String truncateContent(String content) {
+        if (content == null) {
+            return "";
+        }
+        content = content.replaceAll("\\s+", " ").trim();
+        if (content.length() <= 50) {
+            return content;
+        }
+        return content.substring(0, 50) + "...";
     }
 }

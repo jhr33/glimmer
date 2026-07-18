@@ -18,6 +18,7 @@ import com.glimmer.entity.User;
 import com.glimmer.mapper.DriftBottleMapper;
 import com.glimmer.mapper.DriftBottlePickRecordMapper;
 import com.glimmer.mapper.DriftBottleReplyMapper;
+import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.DriftBottleService;
@@ -55,6 +56,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     private final ObjectMapper objectMapper;
     private final NotificationService notificationService;
     private final UserService userService;
+    private final ReportMapper reportMapper;
 
     public DriftBottleServiceImpl(DriftBottleMapper driftBottleMapper,
                                   DriftBottleReplyMapper driftBottleReplyMapper,
@@ -63,7 +65,8 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                                   TokenTransactionMapper tokenTransactionMapper,
                                   ObjectMapper objectMapper,
                                   NotificationService notificationService,
-                                  UserService userService) {
+                                  UserService userService,
+                                  ReportMapper reportMapper) {
         this.driftBottleMapper = driftBottleMapper;
         this.driftBottleReplyMapper = driftBottleReplyMapper;
         this.driftBottlePickRecordMapper = driftBottlePickRecordMapper;
@@ -72,6 +75,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         this.objectMapper = objectMapper;
         this.notificationService = notificationService;
         this.userService = userService;
+        this.reportMapper = reportMapper;
     }
 
     @Override
@@ -100,11 +104,15 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .map(DriftBottlePickRecord::getBottleId)
                 .collect(Collectors.toList());
 
-        // 随机抽取1个未捡过的漂流瓶
+        // 获取被举报成立的瓶子ID列表
+        List<Long> bannedBottleIds = reportMapper.selectApprovedTargetIds("drift_bottle");
+
+        // 随机抽取1个未捡过的漂流瓶（排除被举报成立的）
         LambdaQueryWrapper<DriftBottle> wrapper = new LambdaQueryWrapper<DriftBottle>()
                 .eq(DriftBottle::getStatus, "drifting")
                 .ne(DriftBottle::getUserId, userId)
                 .notIn(!pickedBottleIds.isEmpty(), DriftBottle::getId, pickedBottleIds)
+                .notIn(bannedBottleIds != null && !bannedBottleIds.isEmpty(), DriftBottle::getId, bannedBottleIds)
                 .last("ORDER BY RAND() LIMIT 1");
         List<DriftBottle> bottles = driftBottleMapper.selectList(wrapper);
 
@@ -200,9 +208,13 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         if (!userId.equals(bottle.getUserId())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "仅瓶主可查看回复");
         }
+        
+        List<Long> bannedReplyIds = reportMapper.selectApprovedTargetIds("bottle_reply");
+        
         List<DriftBottleReply> replies = driftBottleReplyMapper.selectList(
                 new LambdaQueryWrapper<DriftBottleReply>()
                         .eq(DriftBottleReply::getBottleId, bottleId)
+                        .notIn(bannedReplyIds != null && !bannedReplyIds.isEmpty(), DriftBottleReply::getId, bannedReplyIds)
                         .orderByAsc(DriftBottleReply::getCreatedAt));
         return replies.stream().map(this::toReplyVO).collect(Collectors.toList());
     }

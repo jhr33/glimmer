@@ -20,6 +20,7 @@ import com.glimmer.mapper.DriftBottleMapper;
 import com.glimmer.mapper.DriftBottlePickRecordMapper;
 import com.glimmer.mapper.DriftBottleReplyMapper;
 import com.glimmer.mapper.LetterMapper;
+import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.LetterService;
@@ -54,6 +55,7 @@ public class LetterServiceImpl implements LetterService {
     private final DriftBottlePickRecordMapper driftBottlePickRecordMapper;
     private final ObjectMapper objectMapper;
     private final UserService userService;
+    private final ReportMapper reportMapper;
 
     public LetterServiceImpl(LetterMapper letterMapper,
                              UserMapper userMapper,
@@ -62,7 +64,8 @@ public class LetterServiceImpl implements LetterService {
                              DriftBottleReplyMapper driftBottleReplyMapper,
                              DriftBottlePickRecordMapper driftBottlePickRecordMapper,
                              ObjectMapper objectMapper,
-                             UserService userService) {
+                             UserService userService,
+                             ReportMapper reportMapper) {
         this.letterMapper = letterMapper;
         this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
@@ -71,6 +74,7 @@ public class LetterServiceImpl implements LetterService {
         this.driftBottlePickRecordMapper = driftBottlePickRecordMapper;
         this.objectMapper = objectMapper;
         this.userService = userService;
+        this.reportMapper = reportMapper;
     }
 
     @Override
@@ -221,8 +225,10 @@ public class LetterServiceImpl implements LetterService {
     @Override
     public PageResult<LetterVO> getInbox(Long userId, int page, int size) {
         Page<Letter> pageParam = new Page<>(page, size);
+        List<Long> bannedLetterIds = reportMapper.selectApprovedTargetIds("letter");
         LambdaQueryWrapper<Letter> wrapper = new LambdaQueryWrapper<Letter>()
                 .eq(Letter::getReceiverId, userId)
+                .notIn(bannedLetterIds != null && !bannedLetterIds.isEmpty(), Letter::getId, bannedLetterIds)
                 .orderByDesc(Letter::getIsRead)
                 .orderByDesc(Letter::getCreatedAt);
         IPage<Letter> result = letterMapper.selectPage(pageParam, wrapper);
@@ -233,8 +239,10 @@ public class LetterServiceImpl implements LetterService {
     @Override
     public PageResult<LetterVO> getSent(Long userId, int page, int size) {
         Page<Letter> pageParam = new Page<>(page, size);
+        List<Long> bannedLetterIds = reportMapper.selectApprovedTargetIds("letter");
         LambdaQueryWrapper<Letter> wrapper = new LambdaQueryWrapper<Letter>()
                 .eq(Letter::getSenderId, userId)
+                .notIn(bannedLetterIds != null && !bannedLetterIds.isEmpty(), Letter::getId, bannedLetterIds)
                 .orderByDesc(Letter::getCreatedAt);
         IPage<Letter> result = letterMapper.selectPage(pageParam, wrapper);
         List<LetterVO> list = toVOList(result.getRecords());
@@ -243,6 +251,11 @@ public class LetterServiceImpl implements LetterService {
 
     @Override
     public LetterVO getLetterDetail(Long userId, Long letterId) {
+        List<Long> bannedLetterIds = reportMapper.selectApprovedTargetIds("letter");
+        if (bannedLetterIds != null && bannedLetterIds.contains(letterId)) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "信件不存在");
+        }
+        
         Letter letter = letterMapper.selectById(letterId);
         if (letter == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "信件不存在");

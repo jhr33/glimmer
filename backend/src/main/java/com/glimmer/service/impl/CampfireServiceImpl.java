@@ -14,6 +14,7 @@ import com.glimmer.entity.User;
 import com.glimmer.mapper.CampfireMapper;
 import com.glimmer.mapper.CampfireMemberMapper;
 import com.glimmer.mapper.CampfireMessageMapper;
+import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.CampfireService;
@@ -49,6 +50,7 @@ public class CampfireServiceImpl implements CampfireService {
     private final TokenTransactionMapper tokenTransactionMapper;
     private final SimpMessagingTemplate messagingTemplate;
     private final UserService userService;
+    private final ReportMapper reportMapper;
 
     public CampfireServiceImpl(CampfireMapper campfireMapper,
                                CampfireMemberMapper campfireMemberMapper,
@@ -56,7 +58,8 @@ public class CampfireServiceImpl implements CampfireService {
                                UserMapper userMapper,
                                TokenTransactionMapper tokenTransactionMapper,
                                SimpMessagingTemplate messagingTemplate,
-                               UserService userService) {
+                               UserService userService,
+                               ReportMapper reportMapper) {
         this.campfireMapper = campfireMapper;
         this.campfireMemberMapper = campfireMemberMapper;
         this.campfireMessageMapper = campfireMessageMapper;
@@ -64,6 +67,7 @@ public class CampfireServiceImpl implements CampfireService {
         this.tokenTransactionMapper = tokenTransactionMapper;
         this.messagingTemplate = messagingTemplate;
         this.userService = userService;
+        this.reportMapper = reportMapper;
     }
 
     @Override
@@ -161,9 +165,12 @@ public class CampfireServiceImpl implements CampfireService {
         // 校验用户是该篝火成员
         checkCampfireMember(userId, campfireId);
 
+        List<Long> bannedMessageIds = reportMapper.selectApprovedTargetIds("campfire_message");
+
         Page<CampfireMessage> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<CampfireMessage> wrapper = new LambdaQueryWrapper<CampfireMessage>()
                 .eq(CampfireMessage::getCampfireId, campfireId)
+                .notIn(bannedMessageIds != null && !bannedMessageIds.isEmpty(), CampfireMessage::getId, bannedMessageIds)
                 .orderByAsc(CampfireMessage::getCreatedAt);
         IPage<CampfireMessage> result = campfireMessageMapper.selectPage(pageParam, wrapper);
         List<CampfireMessageVO> list = result.getRecords().stream()

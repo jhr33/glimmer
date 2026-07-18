@@ -290,6 +290,14 @@ onMounted(() => {
             <div class="detail-label">举报原因：</div>
             <div class="detail-content">{{ detail.content || '-' }}</div>
           </div>
+          <div class="detail-block">
+            <div class="detail-label">被举报内容：</div>
+            <div class="detail-content">{{ detail.reportedContent || '-' }}</div>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">发言场所：</span>
+            <span>{{ detail.location || '-' }}</span>
+          </div>
         </template>
       </div>
 

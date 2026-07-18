@@ -211,10 +211,6 @@ public class ReportServiceImpl implements ReportService {
         report.setAppealCount(0);
         reportMapper.updateById(report);
 
-        if ("approved".equals(result)) {
-            hideTargetContent(report.getTargetType(), report.getTargetId());
-        }
-
         Long targetUserId = report.getTargetUserId();
         User targetUser = userMapper.selectById(targetUserId);
         if (targetUser != null) {
@@ -287,35 +283,6 @@ public class ReportServiceImpl implements ReportService {
         }
 
         log.info("举报审核完成: reportId={}, reviewerId={}, result={}, penaltyType={}", reportId, reviewerId, result, penaltyType);
-    }
-
-    private void hideTargetContent(String targetType, Long targetId) {
-        switch (targetType) {
-            case "drift_bottle": {
-                driftBottleMapper.update(null, new LambdaUpdateWrapper<DriftBottle>()
-                        .eq(DriftBottle::getId, targetId)
-                        .set(DriftBottle::getContent, "[内容已被屏蔽]"));
-                break;
-            }
-            case "bottle_reply": {
-                driftBottleReplyMapper.update(null, new LambdaUpdateWrapper<DriftBottleReply>()
-                        .eq(DriftBottleReply::getId, targetId)
-                        .set(DriftBottleReply::getContent, "[内容已被屏蔽]"));
-                break;
-            }
-            case "letter": {
-                letterMapper.update(null, new LambdaUpdateWrapper<Letter>()
-                        .eq(Letter::getId, targetId)
-                        .set(Letter::getContent, "[内容已被屏蔽]"));
-                break;
-            }
-            case "campfire_message": {
-                campfireMessageMapper.update(null, new LambdaUpdateWrapper<CampfireMessage>()
-                        .eq(CampfireMessage::getId, targetId)
-                        .set(CampfireMessage::getContent, "[内容已被屏蔽]"));
-                break;
-            }
-        }
     }
 
     private void applyPenalty(User user, String penaltyType) {
@@ -514,6 +481,8 @@ public class ReportServiceImpl implements ReportService {
         vo.setCreatedAt(report.getCreatedAt());
         vo.setPenaltyType(report.getPenaltyType());
         vo.setAppealCount(report.getAppealCount());
+        vo.setReportedContent(getReportedContent(report.getTargetType(), report.getTargetId()));
+        vo.setLocation(describeLocation(report.getTargetType(), report.getTargetId()));
         return vo;
     }
 }

@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { adminGetFeedbacks, adminReplyFeedback, adminGetAppeals, adminReviewAppeal } from '@/api/feedback'
+import { adminGetFeedbacks, adminReplyFeedback, adminGetAppeals, adminGetAppeal, adminReviewAppeal } from '@/api/feedback'
 
 const activeTab = ref('feedback') // feedback / appeal
 
@@ -64,6 +64,17 @@ function submitterLabel(item) {
   return item.userNickname || item.user_nickname || item.user?.nickname || item.user?.anonymousName || `用户#${item.userId ?? item.user_id ?? '-'}`
 }
 
+function penaltyTypeLabel(type) {
+  if (!type) return '无处罚'
+  const map = {
+    warning: '警告处理',
+    mute_24h: '禁言24小时',
+    mute_7d: '禁言7天',
+    ban: '永久封禁'
+  }
+  return map[type] || type
+}
+
 function replyText(item) {
   return item.reply ?? item.replyContent ?? item.reply_content ?? ''
 }
@@ -112,7 +123,8 @@ async function openReview(item) {
   reviewVisible.value = true
   appealDetailLoading.value = true
   try {
-    appealDetail.value = item
+    const res = await adminGetAppeal(item.id)
+    appealDetail.value = res.data
   } catch (e) {
     appealDetail.value = item
   } finally {
@@ -378,6 +390,25 @@ onMounted(() => {
             <div class="detail-label">申诉内容：</div>
             <div class="detail-content">{{ appealDetail.content || '-' }}</div>
           </div>
+          <template v-if="appealDetail.report">
+            <el-divider />
+            <div class="detail-row">
+              <span class="detail-label">举报类型：</span>
+              <span>{{ appealDetail.report.targetType || '-' }}</span>
+            </div>
+            <div class="detail-block">
+              <div class="detail-label">被举报内容：</div>
+              <div class="detail-content">{{ appealDetail.report.reportedContent || '-' }}</div>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">发言场所：</span>
+              <span>{{ appealDetail.report.location || '-' }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">原处罚：</span>
+              <span>{{ penaltyTypeLabel(appealDetail.report.penaltyType) }}</span>
+            </div>
+          </template>
         </template>
       </div>
 
