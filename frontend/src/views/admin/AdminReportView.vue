@@ -16,8 +16,17 @@ const detail = ref(null)
 const detailLoading = ref(false)
 const reviewForm = reactive({
   result: 'approved', // approved / rejected
+  penaltyType: '', // warning / mute_24h / mute_7d / ban
   reviewComment: ''
 })
+
+const penaltyTypeOptions = [
+  { value: '', label: '无处罚' },
+  { value: 'warning', label: '警告处理' },
+  { value: 'mute_24h', label: '禁言24小时' },
+  { value: 'mute_7d', label: '禁言7天' },
+  { value: 'ban', label: '永久封禁' }
+]
 
 // 兼容分页结构
 function pickList(data) {
@@ -138,10 +147,12 @@ async function handleReviewSubmit() {
     ElMessage.warning('请选择审核结果')
     return
   }
+
   reviewLoading.value = true
   try {
     await adminReviewReport(detail.value.id, {
       result: reviewForm.result,
+      penaltyType: reviewForm.penaltyType,
       reviewComment: reviewForm.reviewComment.trim()
     })
     ElMessage.success('审核已提交')
@@ -289,6 +300,15 @@ onMounted(() => {
           <el-radio-group v-model="reviewForm.result">
             <el-radio value="approved">举报成立</el-radio>
             <el-radio value="rejected">举报驳回</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="处罚类型" v-if="reviewForm.result === 'approved'" required>
+          <el-radio-group v-model="reviewForm.penaltyType">
+            <el-radio :value="''">无处罚</el-radio>
+            <el-radio value="warning">警告处理</el-radio>
+            <el-radio value="mute_24h">禁言24小时</el-radio>
+            <el-radio value="mute_7d">禁言7天</el-radio>
+            <el-radio value="ban">永久封禁</el-radio>
           </el-radio-group>
         </el-form-item>
         <el-form-item label="审核意见">

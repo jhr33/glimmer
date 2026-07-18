@@ -22,6 +22,7 @@ import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.DriftBottleService;
 import com.glimmer.service.NotificationService;
+import com.glimmer.service.UserService;
 import com.glimmer.service.dto.BottlePickVO;
 import com.glimmer.service.dto.BottleReplyVO;
 import com.glimmer.service.dto.BottleSummaryVO;
@@ -53,6 +54,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     private final TokenTransactionMapper tokenTransactionMapper;
     private final ObjectMapper objectMapper;
     private final NotificationService notificationService;
+    private final UserService userService;
 
     public DriftBottleServiceImpl(DriftBottleMapper driftBottleMapper,
                                   DriftBottleReplyMapper driftBottleReplyMapper,
@@ -60,7 +62,8 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                                   UserMapper userMapper,
                                   TokenTransactionMapper tokenTransactionMapper,
                                   ObjectMapper objectMapper,
-                                  NotificationService notificationService) {
+                                  NotificationService notificationService,
+                                  UserService userService) {
         this.driftBottleMapper = driftBottleMapper;
         this.driftBottleReplyMapper = driftBottleReplyMapper;
         this.driftBottlePickRecordMapper = driftBottlePickRecordMapper;
@@ -68,12 +71,13 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         this.tokenTransactionMapper = tokenTransactionMapper;
         this.objectMapper = objectMapper;
         this.notificationService = notificationService;
+        this.userService = userService;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void throwBottle(Long userId, String content) {
-        checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
         DriftBottle bottle = new DriftBottle();
         bottle.setUserId(userId);
         bottle.setContent(content);
@@ -85,7 +89,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public BottlePickVO pickBottle(Long userId) {
-        checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
 
         // 查询用户已捡过的瓶子ID列表
         List<DriftBottlePickRecord> pickedRecords = driftBottlePickRecordMapper.selectList(
@@ -158,7 +162,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void replyBottle(Long userId, Long bottleId, String content) {
-        checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
         checkPicked(userId, bottleId);
 
         DriftBottleReply reply = new DriftBottleReply();
@@ -206,7 +210,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void thankBottle(Long userId, Long bottleId) {
-        checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
         // 校验已捡到该瓶子
         checkPicked(userId, bottleId);
 
@@ -244,7 +248,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void thankBottleReply(Long userId, Long replyId) {
-        checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
 
         DriftBottleReply reply = driftBottleReplyMapper.selectById(replyId);
         if (reply == null) {
@@ -361,20 +365,6 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         tx.setSource("receive_thanks");
         tx.setRefId(refId);
         tokenTransactionMapper.insert(tx);
-    }
-
-    /**
-     * 校验用户非 banned
-     */
-    private User checkUserNotBanned(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
-        }
-        return user;
     }
 
     /**

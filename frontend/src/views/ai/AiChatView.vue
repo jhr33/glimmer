@@ -136,8 +136,7 @@ async function openConversation(item) {
   inputContent.value = ''
   try {
     const res = await getConversation(id)
-    activeConversation.value = res.data
-    // 会话详情含全部消息
+    activeConversation.value = res.data?.conversation
     messages.value = pickList(res.data?.messages)
     scene.value = 'detail'
     await nextTick()

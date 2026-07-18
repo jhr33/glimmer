@@ -40,5 +40,14 @@ public class Report {
 
     private LocalDateTime reviewedAt;
 
+    /** 处罚类型: null/空(无处罚)/warning(警告)/mute_24h(禁言24小时)/mute_7d(禁言7天)/ban(永久封禁) */
+    private String penaltyType;
+
+    /** 申诉次数 */
+    private Integer appealCount;
+
+    /** 最大申诉次数 */
+    private static final Integer MAX_APPEAL_COUNT = 3;
+
     private LocalDateTime createdAt;
 }

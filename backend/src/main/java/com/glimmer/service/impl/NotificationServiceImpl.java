@@ -82,6 +82,12 @@ public class NotificationServiceImpl implements NotificationService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void sendNotification(Long userId, String type, String title, String content, String refType, Long refId) {
+        sendNotification(userId, type, title, content, refType, refId, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void sendNotification(Long userId, String type, String title, String content, String refType, Long refId, String extra) {
         Notification notification = new Notification();
         notification.setUserId(userId);
         notification.setType(type);
@@ -89,6 +95,7 @@ public class NotificationServiceImpl implements NotificationService {
         notification.setContent(content);
         notification.setRefType(refType);
         notification.setRefId(refId);
+        notification.setExtra(extra);
         notification.setIsRead(0);
         notificationMapper.insert(notification);
         log.info("通知发送成功: userId={}, type={}, refType={}, refId={}", userId, type, refType, refId);
@@ -102,6 +109,7 @@ public class NotificationServiceImpl implements NotificationService {
         vo.setContent(notification.getContent());
         vo.setRefType(notification.getRefType());
         vo.setRefId(notification.getRefId());
+        vo.setExtra(notification.getExtra());
         vo.setIsRead(notification.getIsRead());
         vo.setCreatedAt(notification.getCreatedAt());
         return vo;

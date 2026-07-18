@@ -4,6 +4,7 @@ import com.glimmer.common.response.PageResult;
 import com.glimmer.common.response.Result;
 import com.glimmer.common.util.SecurityUtils;
 import com.glimmer.service.FeedbackService;
+import com.glimmer.service.dto.CreateAppealRequest;
 import com.glimmer.service.dto.CreateFeedbackRequest;
 import com.glimmer.service.dto.FeedbackVO;
 import io.swagger.v3.oas.annotations.Operation;
@@ -21,7 +22,7 @@ import org.springframework.web.bind.annotation.RestController;
  * 意见信接口（需登录）
  * 见开发文档 §4.12
  */
-@Tag(name = "意见信接口", description = "提交意见、我的意见信、意见信详情")
+@Tag(name = "意见与申诉接口", description = "提交意见、提交申诉、我的意见与申诉")
 @RestController
 @RequestMapping("/api/feedbacks")
 public class FeedbackController {
@@ -37,6 +38,14 @@ public class FeedbackController {
     public Result<Void> createFeedback(@Valid @RequestBody CreateFeedbackRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();
         feedbackService.createFeedback(userId, request.getContent());
+        return Result.success();
+    }
+
+    @Operation(summary = "提交申诉")
+    @PostMapping("/appeal")
+    public Result<Void> createAppeal(@Valid @RequestBody CreateAppealRequest request) {
+        Long userId = SecurityUtils.getCurrentUserId();
+        feedbackService.createAppeal(userId, request.getReportId(), request.getContent());
         return Result.success();
     }
 

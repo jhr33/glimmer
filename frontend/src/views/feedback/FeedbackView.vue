@@ -1,137 +1,179 @@
-<script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
-import { createFeedback, getMyFeedbacks } from '@/api/feedback'
-
-const content = ref('')
-const submitting = ref(false)
-
-// 频控：1 分钟内只能提交 1 条
-const lastSubmitAt = ref(0)
-const FREQUENCY_LIMIT = 60 * 1000
-
+<script setup>import { computed, onMounted, reactive, ref } from 'vue';
+import { ElMessage } from 'element-plus';
+import { createFeedback, createAppeal, getMyFeedbacks } from '@/api/feedback';
+import { useRoute } from 'vue-router';
+const route = useRoute();
+const activeTab = ref('feedback');
+const feedbackContent = ref('');
+const appealContent = ref('');
+const appealReportId = ref('');
+const submitting = ref(false);
+const appealSubmitting = ref(false);
+const lastSubmitAt = ref(0);
+const FREQUENCY_LIMIT = 60 * 1000;
 const remainSeconds = computed(() => {
-  if (!lastSubmitAt.value) return 0
-  const diff = FREQUENCY_LIMIT - (Date.now() - lastSubmitAt.value)
-  return diff > 0 ? Math.ceil(diff / 1000) : 0
-})
-
-const isFrequencyLimited = computed(() => remainSeconds.value > 0)
-
-const isBanned = ref(false)
-
-// 列表
-const loading = ref(false)
-const list = ref([])
-const total = ref(0)
-const page = reactive({ current: 1, size: 10 })
-
-// 兼容分页结构
+ if (!lastSubmitAt.value)
+ return 0;
+ const diff = FREQUENCY_LIMIT - (Date.now() - lastSubmitAt.value);
+ return diff > 0 ? Math.ceil(diff / 1000) : 0;
+});
+const isFrequencyLimited = computed(() => remainSeconds.value > 0);
+const isBanned = ref(false);
+const loading = ref(false);
+const list = ref([]);
+const total = ref(0);
+const page = reactive({ current: 1, size: 10 });
 function pickList(data) {
-  if (!data) return []
-  if (Array.isArray(data)) return data
-  return data.records || data.list || data.items || []
+ if (!data)
+ return [];
+ if (Array.isArray(data))
+ return data;
+ return data.records || data.list || data.items || [];
 }
 function pickTotal(data) {
-  if (!data) return 0
-  if (Array.isArray(data)) return data.length
-  return Number(data.total ?? data.totalCount ?? 0)
+ if (!data)
+ return 0;
+ if (Array.isArray(data))
+ return data.length;
+ return Number(data.total ?? data.totalCount ?? 0);
 }
-
-// 状态：pending 待回复 / replied 已回复
 function isReplied(item) {
-  return (item.status ?? item.state) === 'replied'
+ return (item.status ?? item.state) === 'replied';
 }
-
 function statusLabel(item) {
-  return isReplied(item) ? '已回复' : '待回复'
+ return isReplied(item) ? '已回复' : '待回复';
 }
-
 function statusType(item) {
-  return isReplied(item) ? 'success' : 'warning'
+ return isReplied(item) ? 'success' : 'warning';
 }
-
+function itemTypeLabel(item) {
+ return (item.type ?? 'feedback') === 'appeal' ? '申诉' : '意见';
+}
+function itemTypeClass(item) {
+ return (item.type ?? 'feedback') === 'appeal' ? 'appeal-type' : 'feedback-type';
+}
 function replyContent(item) {
-  return item.reply ?? item.replyContent ?? item.reply_content ?? ''
+ return item.reply ?? item.replyContent ?? item.reply_content ?? '';
 }
-
 function createdAt(item) {
-  return item.createdAt || item.created_at || '-'
+ return item.createdAt || item.created_at || '-';
 }
-
 function repliedAt(item) {
-  return item.repliedAt || item.replied_at || '-'
+ return item.repliedAt || item.replied_at || '-';
 }
-
 async function fetchList() {
-  loading.value = true
-  try {
-    const res = await getMyFeedbacks({ page: page.current, size: page.size })
-    const data = res.data
-    list.value = pickList(data)
-    total.value = pickTotal(data)
-  } catch (e) {
-    list.value = []
-    total.value = 0
-  } finally {
-    loading.value = false
-  }
+ loading.value = true;
+ try {
+ const params = { page: page.current, size: page.size };
+ if (activeTab.value) {
+ params.type = activeTab.value;
+ }
+ const res = await getMyFeedbacks(params);
+ const data = res.data;
+ list.value = pickList(data);
+ total.value = pickTotal(data);
+ }
+ catch (e) {
+ list.value = [];
+ total.value = 0;
+ }
+ finally {
+ loading.value = false;
+ }
 }
-
 function handlePageChange(p) {
-  page.current = p
-  fetchList()
+ page.current = p;
+ fetchList();
 }
-
-async function handleSubmit() {
-  if (isBanned.value) {
-    ElMessage.error('账号已被封禁，无法提交')
-    return
-  }
-  if (isFrequencyLimited.value) {
-    ElMessage.warning(`提交过于频繁，请 ${remainSeconds.value} 秒后再试`)
-    return
-  }
-  if (!content.value.trim()) {
-    ElMessage.warning('请填写意见内容')
-    return
-  }
-  submitting.value = true
-  try {
-    await createFeedback({ content: content.value.trim() })
-    ElMessage.success('意见已提交')
-    content.value = ''
-    lastSubmitAt.value = Date.now()
-    page.current = 1
-    await fetchList()
-  } catch (e) {
-    if (e?.code === 4015) {
-      isBanned.value = true
-      ElMessage.error('账号已被封禁，无法提交意见')
-    }
-    // 其它错误已由拦截器统一提示
-  } finally {
-    submitting.value = false
-  }
+async function handleFeedbackSubmit() {
+ if (isBanned.value) {
+ ElMessage.error('账号已被封禁，无法提交');
+ return;
+ }
+ if (isFrequencyLimited.value) {
+ ElMessage.warning(`提交过于频繁，请 ${remainSeconds.value} 秒后再试`);
+ return;
+ }
+ if (!feedbackContent.value.trim()) {
+ ElMessage.warning('请填写意见内容');
+ return;
+ }
+ submitting.value = true;
+ try {
+ await createFeedback({ content: feedbackContent.value.trim() });
+ ElMessage.success('意见已提交');
+ feedbackContent.value = '';
+ lastSubmitAt.value = Date.now();
+ page.current = 1;
+ await fetchList();
+ }
+ catch (e) {
+ if (e?.code === 4015) {
+ isBanned.value = true;
+ ElMessage.error('账号已被封禁，无法提交意见');
+ }
+ }
+ finally {
+ submitting.value = false;
+ }
 }
-
+async function handleAppealSubmit() {
+ if (!appealContent.value.trim()) {
+ ElMessage.warning('请填写申诉内容');
+ return;
+ }
+ appealSubmitting.value = true;
+ try {
+ const data = { content: appealContent.value.trim() };
+ if (appealReportId.value) {
+ data.reportId = appealReportId.value;
+ }
+ await createAppeal(data);
+ ElMessage.success('申诉已提交');
+ appealContent.value = '';
+ appealReportId.value = '';
+ page.current = 1;
+ await fetchList();
+ }
+ catch (e) {
+ if (e?.code === 409) {
+ ElMessage.error(e?.message || '申诉失败');
+ }
+ }
+ finally {
+ appealSubmitting.value = false;
+ }
+}
 onMounted(() => {
-  fetchList()
-})
+ const reportId = route.query.reportId;
+ if (reportId) {
+ appealReportId.value = reportId;
+ activeTab.value = 'appeal';
+ }
+ fetchList();
+});
 </script>
 
 <template>
   <div class="feedback-page">
     <div class="page-header">
-      <h2 class="page-title">📬 意见反馈</h2>
+      <h2 class="page-title">📬 意见与申诉</h2>
       <p class="page-subtitle">你的每一条建议，都会让 glimmer 更温暖</p>
     </div>
 
+    <!-- 标签切换 -->
+    <div class="tabs-wrap">
+      <el-tabs v-model="activeTab" @tab-change="() => { page.current = 1; fetchList(); }">
+        <el-tab-pane label="意见反馈" name="feedback" />
+        <el-tab-pane label="申诉" name="appeal" />
+      </el-tabs>
+    </div>
+
     <!-- 提交意见区 -->
-    <el-card shadow="never" class="submit-card">
+    <el-card v-if="activeTab === 'feedback'" shadow="never" class="submit-card">
       <h3 class="section-title">提交意见</h3>
       <el-input
-        v-model="content"
+        v-model="feedbackContent"
         type="textarea"
         :rows="5"
         maxlength="500"
@@ -148,20 +190,52 @@ onMounted(() => {
           type="primary"
           :loading="submitting"
           :disabled="isFrequencyLimited || isBanned"
-          @click="handleSubmit"
+          @click="handleFeedbackSubmit"
         >
           提交
         </el-button>
       </div>
     </el-card>
 
-    <!-- 我的意见信列表 -->
+    <!-- 提交申诉区 -->
+    <el-card v-if="activeTab === 'appeal'" shadow="never" class="submit-card">
+      <h3 class="section-title">提交申诉</h3>
+      <div v-if="appealReportId" class="appeal-hint">
+        <el-tag type="info" effect="plain">正在为举报 #{{ appealReportId }} 提交申诉</el-tag>
+      </div>
+      <el-input
+        v-model="appealContent"
+        type="textarea"
+        :rows="5"
+        maxlength="500"
+        show-word-limit
+        placeholder="请详细描述你的申诉理由…（最长 500 字）"
+      />
+      <div class="appeal-rules">
+        <ul>
+          <li>一条被举报信息最多可以申诉三次</li>
+          <li>一个账户一天最多提交七次申诉</li>
+          <li>申诉提交后，管理员将重新进行审核</li>
+        </ul>
+      </div>
+      <div class="submit-actions">
+        <el-button
+          type="primary"
+          :loading="appealSubmitting"
+          @click="handleAppealSubmit"
+        >
+          提交申诉
+        </el-button>
+      </div>
+    </el-card>
+
+    <!-- 列表 -->
     <el-card v-loading="loading" shadow="never" class="list-card">
       <template #header>
-        <span class="card-header-title">我的意见信</span>
+        <span class="card-header-title">{{ activeTab === 'appeal' ? '我的申诉' : '我的意见信' }}</span>
       </template>
 
-      <el-empty v-if="!loading && list.length === 0" description="还没有提交过意见" />
+      <el-empty v-if="!loading && list.length === 0" :description="activeTab === 'appeal' ? '还没有提交过申诉' : '还没有提交过意见'" />
 
       <ul v-else class="feedback-list">
         <li v-for="item in list" :key="item.id" class="feedback-item">
@@ -169,6 +243,10 @@ onMounted(() => {
             <el-tag size="small" :type="statusType(item)" effect="plain">
               {{ statusLabel(item) }}
             </el-tag>
+            <el-tag size="small" class="type-tag" :class="itemTypeClass(item)">
+              {{ itemTypeLabel(item) }}
+            </el-tag>
+            <span v-if="item.reportId" class="report-id">举报 #{{ item.reportId }}</span>
             <span class="item-time">提交时间：{{ createdAt(item) }}</span>
           </div>
           <div class="item-content">{{ item.content }}</div>
@@ -213,6 +291,9 @@ onMounted(() => {
   color: #909399;
   font-size: 13px;
 }
+.tabs-wrap {
+  margin-bottom: 8px;
+}
 .submit-card,
 .list-card {
   border-radius: 10px;
@@ -221,6 +302,27 @@ onMounted(() => {
   margin: 0 0 10px;
   font-size: 16px;
   color: #303133;
+}
+.appeal-hint {
+  margin-bottom: 10px;
+}
+.appeal-rules {
+  margin: 10px 0;
+  padding: 10px 12px;
+  background: #fef7ea;
+  border-radius: 8px;
+}
+.appeal-rules ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.appeal-rules li {
+  font-size: 12px;
+  color: #909399;
+  margin-bottom: 4px;
+}
+.appeal-rules li:last-child {
+  margin-bottom: 0;
 }
 .submit-actions {
   margin-top: 12px;
@@ -255,9 +357,24 @@ onMounted(() => {
 .item-top {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
   margin-bottom: 8px;
   flex-wrap: wrap;
+}
+.type-tag {
+  background: #f0f9eb;
+  color: #67c23a;
+}
+.type-tag.appeal-type {
+  background: #ecf5ff;
+  color: #409eff;
+}
+.report-id {
+  font-size: 12px;
+  color: #909399;
+  background: #f5f5f5;
+  padding: 2px 6px;
+  border-radius: 4px;
 }
 .item-time {
   font-size: 12px;

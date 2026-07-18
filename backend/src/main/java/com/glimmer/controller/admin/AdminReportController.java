@@ -54,7 +54,7 @@ public class AdminReportController {
     public Result<Void> reviewReport(@PathVariable Long id,
                                      @Valid @RequestBody ReviewReportRequest request) {
         Long reviewerId = SecurityUtils.getCurrentUserId();
-        reportService.reviewReport(reviewerId, id, request.getResult(), request.getReviewComment());
+        reportService.reviewReport(reviewerId, id, request.getResult(), request.getReviewComment(), request.getPenaltyType());
         return Result.success();
     }
 }

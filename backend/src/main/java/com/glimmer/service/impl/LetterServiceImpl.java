@@ -23,6 +23,7 @@ import com.glimmer.mapper.LetterMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.LetterService;
+import com.glimmer.service.UserService;
 import com.glimmer.service.dto.LetterVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -52,6 +53,7 @@ public class LetterServiceImpl implements LetterService {
     private final DriftBottleReplyMapper driftBottleReplyMapper;
     private final DriftBottlePickRecordMapper driftBottlePickRecordMapper;
     private final ObjectMapper objectMapper;
+    private final UserService userService;
 
     public LetterServiceImpl(LetterMapper letterMapper,
                              UserMapper userMapper,
@@ -59,7 +61,8 @@ public class LetterServiceImpl implements LetterService {
                              DriftBottleMapper driftBottleMapper,
                              DriftBottleReplyMapper driftBottleReplyMapper,
                              DriftBottlePickRecordMapper driftBottlePickRecordMapper,
-                             ObjectMapper objectMapper) {
+                             ObjectMapper objectMapper,
+                             UserService userService) {
         this.letterMapper = letterMapper;
         this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
@@ -67,15 +70,20 @@ public class LetterServiceImpl implements LetterService {
         this.driftBottleReplyMapper = driftBottleReplyMapper;
         this.driftBottlePickRecordMapper = driftBottlePickRecordMapper;
         this.objectMapper = objectMapper;
+        this.userService = userService;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void writeLetter(Long senderId, Long receiverId, String content, Long sourceBottleReplyId) {
         // 校验发送者非 banned
-        User sender = checkUserNotBanned(senderId);
+        userService.checkUserNotMuted(senderId);
 
         // 校验代币余额 >= 1
+        User sender = userMapper.selectById(senderId);
+        if (sender == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
         if (sender.getTokenBalance() == null || sender.getTokenBalance() < 1) {
             throw new BusinessException(ErrorCode.TOKEN_NOT_ENOUGH);
         }
@@ -150,6 +158,8 @@ public class LetterServiceImpl implements LetterService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void replyLetter(Long userId, Long letterId, String content) {
+        userService.checkUserNotMuted(userId);
+
         Letter original = letterMapper.selectById(letterId);
         if (original == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "信件不存在");
@@ -263,7 +273,7 @@ public class LetterServiceImpl implements LetterService {
 
     @Override
     public void thankLetter(Long userId, Long letterId) {
-        checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
 
         Letter letter = letterMapper.selectById(letterId);
         if (letter == null) {
@@ -329,20 +339,6 @@ public class LetterServiceImpl implements LetterService {
         letterMapper.update(null, new LambdaUpdateWrapper<Letter>()
                 .eq(Letter::getId, letterId)
                 .set(Letter::getIsRead, 1));
-    }
-
-    /**
-     * 校验用户非 banned
-     */
-    private User checkUserNotBanned(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
-        }
-        return user;
     }
 
     /**

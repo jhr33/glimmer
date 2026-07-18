@@ -26,6 +26,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -127,6 +128,21 @@ public class UserServiceImpl implements UserService {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
         return user;
+    }
+
+    @Override
+    public void checkUserNotMuted(Long userId) {
+        User user = getUserOrThrow(userId);
+        if ("banned".equals(user.getStatus())) {
+            throw new BusinessException(ErrorCode.USER_BANNED);
+        }
+        String muteType = user.getMuteType();
+        if (StringUtils.hasText(muteType) && !"warning".equals(muteType)) {
+            LocalDateTime muteEndTime = user.getMuteEndTime();
+            if (muteEndTime == null || muteEndTime.isAfter(LocalDateTime.now())) {
+                throw new BusinessException(ErrorCode.USER_MUTED);
+            }
+        }
     }
 
     @Override

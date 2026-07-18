@@ -44,7 +44,8 @@ public enum ErrorCode {
     USER_BANNED(4015, "用户已被封禁"),
     CANNOT_REPORT_SELF(4016, "不能举报自己"),
     ALREADY_REPORTED(4017, "已举报过该目标"),
-    FLOWER_TYPE_UNAVAILABLE(4018, "花种未上架");
+    FLOWER_TYPE_UNAVAILABLE(4018, "花种未上架"),
+    USER_MUTED(4019, "用户已被禁言");
 
     private final int code;
     private final String message;

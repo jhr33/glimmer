@@ -1,7 +1,9 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { adminGetFeedbacks, adminReplyFeedback } from '@/api/feedback'
+import { adminGetFeedbacks, adminReplyFeedback, adminGetAppeals, adminReviewAppeal } from '@/api/feedback'
+
+const activeTab = ref('feedback') // feedback / appeal
 
 const loading = ref(false)
 const list = ref([])
@@ -9,11 +11,30 @@ const total = ref(0)
 const page = reactive({ current: 1, size: 10 })
 const statusFilter = ref('') // '' 全部 / pending / replied
 
-// 回复弹窗
+// 回复弹窗（意见反馈）
 const replyVisible = ref(false)
 const replyLoading = ref(false)
 const current = ref(null)
 const replyContent = ref('')
+
+// 审核弹窗（申诉）
+const reviewVisible = ref(false)
+const reviewLoading = ref(false)
+const appealDetail = ref(null)
+const appealDetailLoading = ref(false)
+const reviewForm = reactive({
+  result: 'approved', // approved / rejected
+  newPenaltyType: '', // null/warning/mute_24h/mute_7d/ban
+  reply: ''
+})
+
+const penaltyTypeOptions = [
+  { value: '', label: '解除处罚' },
+  { value: 'warning', label: '警告处理' },
+  { value: 'mute_24h', label: '禁言24小时' },
+  { value: 'mute_7d', label: '禁言7天' },
+  { value: 'ban', label: '永久封禁' }
+]
 
 // 兼容分页结构
 function pickList(data) {
@@ -62,7 +83,9 @@ async function fetchList() {
     if (statusFilter.value) {
       params.status = statusFilter.value
     }
-    const res = await adminGetFeedbacks(params)
+    const res = activeTab.value === 'feedback' 
+      ? await adminGetFeedbacks(params)
+      : await adminGetAppeals(params)
     const data = res.data
     list.value = pickList(data)
     total.value = pickTotal(data)
@@ -72,6 +95,58 @@ async function fetchList() {
   } finally {
     loading.value = false
   }
+}
+
+function handleTabChange(tab) {
+  activeTab.value = tab
+  page.current = 1
+  statusFilter.value = ''
+  fetchList()
+}
+
+async function openReview(item) {
+  appealDetail.value = null
+  reviewForm.result = 'approved'
+  reviewForm.newPenaltyType = ''
+  reviewForm.reply = ''
+  reviewVisible.value = true
+  appealDetailLoading.value = true
+  try {
+    appealDetail.value = item
+  } catch (e) {
+    appealDetail.value = item
+  } finally {
+    appealDetailLoading.value = false
+  }
+}
+
+async function handleReviewSubmit() {
+  if (!appealDetail.value?.id) return
+  if (!reviewForm.result) {
+    ElMessage.warning('请选择审核结果')
+    return
+  }
+  reviewLoading.value = true
+  try {
+    await adminReviewAppeal(appealDetail.value.id, {
+      result: reviewForm.result,
+      reply: reviewForm.reply.trim(),
+      newPenaltyType: reviewForm.newPenaltyType || null
+    })
+    ElMessage.success('审核已提交')
+    reviewVisible.value = false
+    await fetchList()
+  } catch (e) {
+    // 错误已由拦截器统一提示
+  } finally {
+    reviewLoading.value = false
+  }
+}
+
+function reviewResultLabel(r) {
+  if (r === 'approved') return '申诉成功'
+  if (r === 'rejected') return '申诉失败'
+  return '-'
 }
 
 function handleFilterChange() {
@@ -117,20 +192,26 @@ onMounted(() => {
 <template>
   <div class="admin-feedback-page">
     <div class="page-header">
-      <h2 class="page-title">意见信管理</h2>
-      <div class="filter-bar">
-        <span class="filter-label">状态：</span>
-        <el-select
-          v-model="statusFilter"
-          placeholder="全部"
-          clearable
-          style="width: 140px"
-          @change="handleFilterChange"
-        >
-          <el-option label="全部" value="" />
-          <el-option label="待回复" value="pending" />
-          <el-option label="已回复" value="replied" />
-        </el-select>
+      <h2 class="page-title">意见与申诉管理</h2>
+      <div class="header-right">
+        <el-tabs v-model="activeTab" @tab-change="handleTabChange" class="header-tabs">
+          <el-tab-pane label="意见反馈" name="feedback" />
+          <el-tab-pane label="申诉处理" name="appeal" />
+        </el-tabs>
+        <div class="filter-bar">
+          <span class="filter-label">状态：</span>
+          <el-select
+            v-model="statusFilter"
+            placeholder="全部"
+            clearable
+            style="width: 140px"
+            @change="handleFilterChange"
+          >
+            <el-option label="全部" value="" />
+            <el-option label="待处理" value="pending" />
+            <el-option label="已处理" value="replied" />
+          </el-select>
+        </div>
       </div>
     </div>
 
@@ -140,8 +221,24 @@ onMounted(() => {
         <el-table-column label="提交者" min-width="120">
           <template #default="{ row }">{{ submitterLabel(row) }}</template>
         </el-table-column>
+        <el-table-column v-if="activeTab === 'appeal'" label="关联举报ID" width="120">
+          <template #default="{ row }">{{ row.reportId ?? '-' }}</template>
+        </el-table-column>
         <el-table-column label="内容" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">{{ row.content || '-' }}</template>
+        </el-table-column>
+        <el-table-column v-if="activeTab === 'appeal'" label="审核结果" width="110">
+          <template #default="{ row }">
+            <el-tag
+              v-if="row.status === 'replied'"
+              size="small"
+              :type="row.result === 'approved' ? 'success' : 'danger'"
+              effect="plain"
+            >
+              {{ reviewResultLabel(row.result) }}
+            </el-tag>
+            <span v-else>-</span>
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
@@ -159,16 +256,30 @@ onMounted(() => {
         </el-table-column>
         <el-table-column label="操作" width="100" fixed="right">
           <template #default="{ row }">
-            <el-button
-              v-if="!isReplied(row)"
-              size="small"
-              type="primary"
-              link
-              @click="openReply(row)"
-            >
-              回复
-            </el-button>
-            <span v-else class="text-muted">已回复</span>
+            <template v-if="activeTab === 'feedback'">
+              <el-button
+                v-if="!isReplied(row)"
+                size="small"
+                type="primary"
+                link
+                @click="openReply(row)"
+              >
+                回复
+              </el-button>
+              <span v-else class="text-muted">已回复</span>
+            </template>
+            <template v-else>
+              <el-button
+                v-if="!isReplied(row)"
+                size="small"
+                type="primary"
+                link
+                @click="openReview(row)"
+              >
+                审核
+              </el-button>
+              <span v-else class="text-muted">已审核</span>
+            </template>
           </template>
         </el-table-column>
       </el-table>
@@ -237,6 +348,80 @@ onMounted(() => {
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 申诉审核弹窗 -->
+    <el-dialog
+      v-model="reviewVisible"
+      title="审核申诉"
+      width="560px"
+      destroy-on-close
+    >
+      <div v-loading="appealDetailLoading">
+        <template v-if="appealDetail">
+          <div class="detail-row">
+            <span class="detail-label">申诉ID：</span>
+            <span>{{ appealDetail.id }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">关联举报ID：</span>
+            <span>{{ appealDetail.reportId ?? '-' }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">申诉人：</span>
+            <span>{{ submitterLabel(appealDetail) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">提交时间：</span>
+            <span>{{ createdAt(appealDetail) }}</span>
+          </div>
+          <div class="detail-block">
+            <div class="detail-label">申诉内容：</div>
+            <div class="detail-content">{{ appealDetail.content || '-' }}</div>
+          </div>
+        </template>
+      </div>
+
+      <el-divider />
+
+      <el-form label-position="top" class="review-form">
+        <el-form-item label="审核结果" required>
+          <el-radio-group v-model="reviewForm.result">
+            <el-radio value="approved">申诉成功</el-radio>
+            <el-radio value="rejected">申诉失败</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="处罚变更" v-if="reviewForm.result === 'approved'">
+          <el-radio-group v-model="reviewForm.newPenaltyType">
+            <el-radio :value="''">解除处罚</el-radio>
+            <el-radio value="warning">警告处理</el-radio>
+            <el-radio value="mute_24h">禁言24小时</el-radio>
+            <el-radio value="mute_7d">禁言7天</el-radio>
+            <el-radio value="ban">永久封禁</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item label="审核回复">
+          <el-input
+            v-model="reviewForm.reply"
+            type="textarea"
+            :rows="4"
+            maxlength="500"
+            show-word-limit
+            placeholder="填写审核回复（可选）"
+          />
+        </el-form-item>
+      </el-form>
+
+      <template #footer>
+        <el-button @click="reviewVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="reviewLoading"
+          @click="handleReviewSubmit"
+        >
+          提交审核
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -257,6 +442,15 @@ onMounted(() => {
   margin: 0;
   font-size: 18px;
   color: #303133;
+}
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.header-tabs {
+  font-size: 14px;
 }
 .filter-bar {
   display: flex;

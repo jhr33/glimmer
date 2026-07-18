@@ -3,8 +3,10 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getNotifications, markRead, markAllRead } from '@/api/notification'
 import { useNotificationStore } from '@/stores/notification'
+import { useRouter } from 'vue-router'
 
 const notificationStore = useNotificationStore()
+const router = useRouter()
 
 const loading = ref(false)
 const markAllLoading = ref(false)
@@ -99,6 +101,40 @@ function handlePageChange(p) {
 
 const hasUnread = computed(() => list.value.some((n) => !isRead(n)))
 
+function canAppeal(item) {
+  if (item.type !== 'report_result') return false
+  const title = item.title || ''
+  if (title.includes('您的内容被举报')) {
+    return true
+  }
+  if (!item.extra) return false
+  try {
+    const extra = typeof item.extra === 'string' ? JSON.parse(item.extra) : item.extra
+    return extra?.result === 'approved'
+  } catch {
+    return false
+  }
+}
+
+function getReportId(item) {
+  if (!item.extra) return null
+  try {
+    const extra = typeof item.extra === 'string' ? JSON.parse(item.extra) : item.extra
+    return extra?.reportId
+  } catch {
+    return null
+  }
+}
+
+function handleAppeal(item) {
+  const reportId = getReportId(item)
+  if (reportId) {
+    router.push(`/feedback?reportId=${reportId}`)
+  } else {
+    router.push('/feedback?type=appeal')
+  }
+}
+
 onMounted(() => {
   fetchList()
   // 进入页面同步一次顶部红点
@@ -141,6 +177,11 @@ onMounted(() => {
             <div class="item-title">{{ item.title || '无标题' }}</div>
             <div v-if="item.content" class="item-content">{{ item.content }}</div>
             <div class="item-time">{{ item.createdAt || item.created_at || '-' }}</div>
+            <div v-if="canAppeal(item)" class="appeal-btn-wrap">
+              <el-button size="small" type="primary" @click.stop="handleAppeal(item)">
+                申诉
+              </el-button>
+            </div>
           </div>
           <span v-if="!isRead(item)" class="unread-dot" />
         </li>
@@ -244,6 +285,13 @@ onMounted(() => {
   background: #f56c6c;
   flex-shrink: 0;
   margin-top: 6px;
+}
+.appeal-btn-wrap {
+  margin-top: 8px;
+}
+.appeal-btn-wrap .el-button {
+  padding: 2px 10px;
+  font-size: 12px;
 }
 .pagination-wrap {
   margin-top: 16px;

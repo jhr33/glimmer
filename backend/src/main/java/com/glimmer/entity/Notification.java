@@ -30,6 +30,9 @@ public class Notification {
 
     private Long refId;
 
+    /** 额外信息（JSON格式），如举报审核结果、处罚类型等 */
+    private String extra;
+
     /** 是否已读: 0未读/1已读 */
     private Integer isRead;
 

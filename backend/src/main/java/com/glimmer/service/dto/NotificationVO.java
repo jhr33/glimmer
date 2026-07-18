@@ -17,6 +17,7 @@ public class NotificationVO {
     private String content;
     private String refType;
     private Long refId;
+    private String extra;
     private Integer isRead;
     private LocalDateTime createdAt;
 }

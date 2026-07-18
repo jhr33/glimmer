@@ -45,4 +45,10 @@ public interface UserService {
      * @param status  目标状态: active/banned
      */
     void updateUserStatus(Long adminId, Long userId, String status);
+
+    /**
+     * 检查用户是否被禁言或封禁（用于发布内容前校验）
+     * 若被封禁抛出 USER_BANNED，若被禁言抛出 USER_MUTED
+     */
+    void checkUserNotMuted(Long userId);
 }

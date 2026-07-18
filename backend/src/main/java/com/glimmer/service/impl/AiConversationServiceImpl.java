@@ -17,6 +17,7 @@ import com.glimmer.mapper.AiMessageMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.AiConversationService;
+import com.glimmer.service.UserService;
 import com.glimmer.service.ai.DeepSeekClient;
 import com.glimmer.service.ai.DeepSeekMessage;
 import com.glimmer.service.dto.AiConversationVO;
@@ -52,28 +53,35 @@ public class AiConversationServiceImpl implements AiConversationService {
     private final TokenTransactionMapper tokenTransactionMapper;
     private final DeepSeekClient deepSeekClient;
     private final DeepSeekProperties deepSeekProperties;
+    private final UserService userService;
 
     public AiConversationServiceImpl(AiConversationMapper aiConversationMapper,
                                      AiMessageMapper aiMessageMapper,
                                      UserMapper userMapper,
                                      TokenTransactionMapper tokenTransactionMapper,
                                      DeepSeekClient deepSeekClient,
-                                     DeepSeekProperties deepSeekProperties) {
+                                     DeepSeekProperties deepSeekProperties,
+                                     UserService userService) {
         this.aiConversationMapper = aiConversationMapper;
         this.aiMessageMapper = aiMessageMapper;
         this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
         this.deepSeekClient = deepSeekClient;
         this.deepSeekProperties = deepSeekProperties;
+        this.userService = userService;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public AiConversationVO startConversation(Long userId) {
-        // 1. 校验用户非 banned
-        User user = checkUserNotBanned(userId);
+        // 1. 校验用户非 banned/禁言
+        userService.checkUserNotMuted(userId);
 
         // 2. 校验代币余额 >= 1
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
         if (user.getTokenBalance() == null || user.getTokenBalance() < START_CONVERSATION_TOKEN_COST) {
             throw new BusinessException(ErrorCode.TOKEN_NOT_ENOUGH);
         }
@@ -239,20 +247,6 @@ public class AiConversationServiceImpl implements AiConversationService {
     }
 
     // ==================== 私有辅助方法 ====================
-
-    /**
-     * 校验用户非 banned
-     */
-    private User checkUserNotBanned(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
-        }
-        return user;
-    }
 
     /**
      * 校验会话属于当前用户

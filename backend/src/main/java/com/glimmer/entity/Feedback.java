@@ -30,5 +30,11 @@ public class Feedback {
 
     private LocalDateTime repliedAt;
 
+    /** 类型: feedback(意见反馈)/appeal(申诉) */
+    private String type;
+
+    /** 关联举报ID（申诉时必填） */
+    private Long reportId;
+
     private LocalDateTime createdAt;
 }

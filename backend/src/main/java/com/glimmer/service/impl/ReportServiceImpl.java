@@ -1,6 +1,7 @@
 package com.glimmer.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
@@ -12,6 +13,7 @@ import com.glimmer.entity.DriftBottleReply;
 import com.glimmer.entity.Letter;
 import com.glimmer.entity.Report;
 import com.glimmer.entity.User;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.glimmer.mapper.CampfireMessageMapper;
 import com.glimmer.mapper.DriftBottleMapper;
 import com.glimmer.mapper.DriftBottleReplyMapper;
@@ -29,6 +31,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -52,11 +55,12 @@ public class ReportServiceImpl implements ReportService {
     private final LetterMapper letterMapper;
     private final CampfireMessageMapper campfireMessageMapper;
     private final NotificationService notificationService;
+    private final ObjectMapper objectMapper;
 
     public ReportServiceImpl(ReportMapper reportMapper, UserMapper userMapper,
                              DriftBottleMapper driftBottleMapper, DriftBottleReplyMapper driftBottleReplyMapper,
                              LetterMapper letterMapper, CampfireMessageMapper campfireMessageMapper,
-                             NotificationService notificationService) {
+                             NotificationService notificationService, ObjectMapper objectMapper) {
         this.reportMapper = reportMapper;
         this.userMapper = userMapper;
         this.driftBottleMapper = driftBottleMapper;
@@ -64,6 +68,7 @@ public class ReportServiceImpl implements ReportService {
         this.letterMapper = letterMapper;
         this.campfireMessageMapper = campfireMessageMapper;
         this.notificationService = notificationService;
+        this.objectMapper = objectMapper;
     }
 
     @Override
@@ -172,19 +177,23 @@ public class ReportServiceImpl implements ReportService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void reviewReport(Long reviewerId, Long reportId, String result, String reviewComment) {
-        // 1. 校验审核人是 admin 角色（Controller 已校验，Service 兜底）
+    public void reviewReport(Long reviewerId, Long reportId, String result, String reviewComment, String penaltyType) {
         User reviewer = userMapper.selectById(reviewerId);
         if (reviewer == null || !"admin".equals(reviewer.getRole())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "无管理员权限");
         }
 
-        // 2. 校验 result 取值
         if (!"approved".equals(result) && !"rejected".equals(result)) {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "审核结果只能为 approved 或 rejected");
         }
 
-        // 3. 校验举报存在且为待审核
+        if ("approved".equals(result) && StringUtils.hasText(penaltyType)) {
+            if (!"warning".equals(penaltyType) && !"mute_24h".equals(penaltyType) && 
+                !"mute_7d".equals(penaltyType) && !"ban".equals(penaltyType)) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "处罚类型只能为 warning/mute_24h/mute_7d/ban");
+            }
+        }
+
         Report report = reportMapper.selectById(reportId);
         if (report == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "举报不存在");
@@ -193,15 +202,19 @@ public class ReportServiceImpl implements ReportService {
             throw new BusinessException(ErrorCode.CONFLICT, "该举报已审核");
         }
 
-        // 4. 更新举报记录
         report.setStatus("reviewed");
         report.setResult(result);
         report.setReviewerId(reviewerId);
         report.setReviewComment(reviewComment);
         report.setReviewedAt(LocalDateTime.now());
+        report.setPenaltyType(penaltyType);
+        report.setAppealCount(0);
         reportMapper.updateById(report);
 
-        // 5. 被举报人 pending_report_count -= 1（最小为 0，乐观锁）
+        if ("approved".equals(result)) {
+            hideTargetContent(report.getTargetType(), report.getTargetId());
+        }
+
         Long targetUserId = report.getTargetUserId();
         User targetUser = userMapper.selectById(targetUserId);
         if (targetUser != null) {
@@ -209,35 +222,26 @@ public class ReportServiceImpl implements ReportService {
             int newCount = Math.max(0, currentCount - 1);
             targetUser.setPendingReportCount(newCount);
 
-            // 6. 若被举报人当前被封禁且计数已低于阈值，则解封
-            boolean shouldUnban = "banned".equals(targetUser.getStatus()) && newCount < BAN_THRESHOLD;
-            if (shouldUnban) {
-                targetUser.setStatus("active");
+            if ("approved".equals(result) && StringUtils.hasText(penaltyType)) {
+                applyPenalty(targetUser, penaltyType);
             }
 
             boolean updated = userMapper.updateById(targetUser) > 0;
             if (!updated) {
                 throw new BusinessException(ErrorCode.CONFLICT, "审核处理冲突，请重试");
             }
-
-            if (shouldUnban) {
-                notificationService.sendNotification(
-                        targetUserId,
-                        "system",
-                        "账号已解封",
-                        "您的待处理举报数已降至阈值以下，账号已恢复使用。",
-                        null,
-                        null);
-                log.info("用户因举报计数降低被自动解封: userId={}, pendingReportCount={}", targetUserId, newCount);
-            }
         }
 
-        // 7. 向举报人发送 report_result 通知
         String resultLabel = "approved".equals(result) ? "举报成立" : "举报驳回";
         String targetLabel = describeTargetType(report.getTargetType());
+        
+        String reportedContent = getReportedContent(report.getTargetType(), report.getTargetId());
+        String locationLabel = describeLocation(report.getTargetType(), report.getTargetId());
+
         String reporterContent = String.format(
-                "您举报的%s内容，审核结果：%s。%s",
-                targetLabel, resultLabel, StringUtils.hasText(reviewComment) ? "审核备注：" + reviewComment : "");
+                "您举报的%s内容（场所：%s，内容：%s），审核结果：%s。%s",
+                targetLabel, locationLabel, reportedContent, resultLabel, 
+                StringUtils.hasText(reviewComment) ? "审核备注：" + reviewComment : "");
 
         notificationService.sendNotification(
                 report.getReporterId(),
@@ -247,21 +251,99 @@ public class ReportServiceImpl implements ReportService {
                 "report",
                 reportId);
 
-        // 8. 向被举报人发送 report_result 通知
         if (targetUserId != null) {
-            String targetContent = String.format(
-                    "您的%s内容被举报，审核结果：%s。%s",
-                    targetLabel, resultLabel, StringUtils.hasText(reviewComment) ? "审核备注：" + reviewComment : "");
+            StringBuilder targetContent = new StringBuilder();
+            targetContent.append(String.format("您在%s发布的内容（内容：%s，发言者ID：%d）被举报，审核结果：%s。", 
+                    locationLabel, reportedContent, targetUserId, resultLabel));
+            if (StringUtils.hasText(reviewComment)) {
+                targetContent.append("审核备注：").append(reviewComment).append("。");
+            }
+            if ("approved".equals(result) && StringUtils.hasText(penaltyType)) {
+                String penaltyLabel = describePenaltyType(penaltyType);
+                targetContent.append("处罚结果：").append(penaltyLabel).append("。");
+                targetContent.append("您可以在意见与申诉页面提交申诉，最多可申诉3次。");
+            }
+
+            String extraJson = null;
+            if ("approved".equals(result)) {
+                try {
+                    Map<String, Object> extraMap = new HashMap<>();
+                    extraMap.put("reportId", reportId);
+                    extraMap.put("result", result);
+                    extraMap.put("penaltyType", penaltyType);
+                    extraJson = objectMapper.writeValueAsString(extraMap);
+                } catch (Exception e) {
+                    log.warn("序列化通知额外信息失败", e);
+                }
+            }
             notificationService.sendNotification(
                     targetUserId,
                     "report_result",
                     "您的内容被举报",
-                    targetContent,
+                    targetContent.toString(),
                     "report",
-                    reportId);
+                    reportId,
+                    extraJson);
         }
 
-        log.info("举报审核完成: reportId={}, reviewerId={}, result={}", reportId, reviewerId, result);
+        log.info("举报审核完成: reportId={}, reviewerId={}, result={}, penaltyType={}", reportId, reviewerId, result, penaltyType);
+    }
+
+    private void hideTargetContent(String targetType, Long targetId) {
+        switch (targetType) {
+            case "drift_bottle": {
+                driftBottleMapper.update(null, new LambdaUpdateWrapper<DriftBottle>()
+                        .eq(DriftBottle::getId, targetId)
+                        .set(DriftBottle::getContent, "[内容已被屏蔽]"));
+                break;
+            }
+            case "bottle_reply": {
+                driftBottleReplyMapper.update(null, new LambdaUpdateWrapper<DriftBottleReply>()
+                        .eq(DriftBottleReply::getId, targetId)
+                        .set(DriftBottleReply::getContent, "[内容已被屏蔽]"));
+                break;
+            }
+            case "letter": {
+                letterMapper.update(null, new LambdaUpdateWrapper<Letter>()
+                        .eq(Letter::getId, targetId)
+                        .set(Letter::getContent, "[内容已被屏蔽]"));
+                break;
+            }
+            case "campfire_message": {
+                campfireMessageMapper.update(null, new LambdaUpdateWrapper<CampfireMessage>()
+                        .eq(CampfireMessage::getId, targetId)
+                        .set(CampfireMessage::getContent, "[内容已被屏蔽]"));
+                break;
+            }
+        }
+    }
+
+    private void applyPenalty(User user, String penaltyType) {
+        user.setMuteType(penaltyType);
+        if ("ban".equals(penaltyType)) {
+            user.setStatus("banned");
+            user.setMuteEndTime(null);
+        } else {
+            user.setStatus("active");
+            LocalDateTime now = LocalDateTime.now();
+            if ("mute_24h".equals(penaltyType)) {
+                user.setMuteEndTime(now.plusHours(24));
+            } else if ("mute_7d".equals(penaltyType)) {
+                user.setMuteEndTime(now.plusDays(7));
+            } else if ("warning".equals(penaltyType)) {
+                user.setMuteEndTime(null);
+            }
+        }
+    }
+
+    private String describePenaltyType(String penaltyType) {
+        switch (penaltyType) {
+            case "warning": return "警告";
+            case "mute_24h": return "禁言24小时";
+            case "mute_7d": return "禁言7天";
+            case "ban": return "永久封禁";
+            default: return penaltyType;
+        }
     }
 
     /**
@@ -317,6 +399,79 @@ public class ReportServiceImpl implements ReportService {
         }
     }
 
+    private String getReportedContent(String targetType, Long targetId) {
+        try {
+            switch (targetType) {
+                case "drift_bottle": {
+                    DriftBottle bottle = driftBottleMapper.selectById(targetId);
+                    return bottle != null ? truncateContent(bottle.getContent()) : "未知内容";
+                }
+                case "bottle_reply": {
+                    DriftBottleReply reply = driftBottleReplyMapper.selectById(targetId);
+                    return reply != null ? truncateContent(reply.getContent()) : "未知内容";
+                }
+                case "letter": {
+                    Letter letter = letterMapper.selectById(targetId);
+                    return letter != null ? truncateContent(letter.getContent()) : "未知内容";
+                }
+                case "campfire_message": {
+                    CampfireMessage message = campfireMessageMapper.selectById(targetId);
+                    return message != null ? truncateContent(message.getContent()) : "未知内容";
+                }
+                default:
+                    return "未知内容";
+            }
+        } catch (Exception e) {
+            log.warn("获取被举报内容失败: targetType={}, targetId={}", targetType, targetId, e);
+            return "未知内容";
+        }
+    }
+
+    private String describeLocation(String targetType, Long targetId) {
+        try {
+            switch (targetType) {
+                case "drift_bottle":
+                    return "漂流瓶广场";
+                case "bottle_reply": {
+                    DriftBottleReply reply = driftBottleReplyMapper.selectById(targetId);
+                    if (reply != null && reply.getBottleId() != null) {
+                        return "漂流瓶#" + reply.getBottleId();
+                    }
+                    return "漂流瓶回复";
+                }
+                case "letter": {
+                    Letter letter = letterMapper.selectById(targetId);
+                    if (letter != null && letter.getReceiverId() != null) {
+                        return "私信#" + letter.getReceiverId();
+                    }
+                    return "信件";
+                }
+                case "campfire_message": {
+                    CampfireMessage message = campfireMessageMapper.selectById(targetId);
+                    if (message != null && message.getCampfireId() != null) {
+                        return "篝火#" + message.getCampfireId();
+                    }
+                    return "篝火";
+                }
+                default:
+                    return targetType;
+            }
+        } catch (Exception e) {
+            log.warn("获取发言场所失败: targetType={}, targetId={}", targetType, targetId, e);
+            return describeTargetType(targetType);
+        }
+    }
+
+    private String truncateContent(String content) {
+        if (content == null) {
+            return "空内容";
+        }
+        if (content.length() <= 50) {
+            return content;
+        }
+        return content.substring(0, 50) + "...";
+    }
+
     /**
      * 批量关联用户名并组装 VO 列表
      */
@@ -357,6 +512,8 @@ public class ReportServiceImpl implements ReportService {
         vo.setReviewComment(report.getReviewComment());
         vo.setReviewedAt(report.getReviewedAt());
         vo.setCreatedAt(report.getCreatedAt());
+        vo.setPenaltyType(report.getPenaltyType());
+        vo.setAppealCount(report.getAppealCount());
         return vo;
     }
 }

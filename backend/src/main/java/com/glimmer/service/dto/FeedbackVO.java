@@ -5,7 +5,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * 意见信视图
+ * 意见与申诉视图
  */
 @Data
 public class FeedbackVO {
@@ -19,4 +19,8 @@ public class FeedbackVO {
     private Long replyAdminId;
     private LocalDateTime repliedAt;
     private LocalDateTime createdAt;
+    /** 类型: feedback(意见反馈)/appeal(申诉) */
+    private String type;
+    /** 关联举报ID（申诉时） */
+    private Long reportId;
 }

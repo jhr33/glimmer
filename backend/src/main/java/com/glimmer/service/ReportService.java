@@ -41,6 +41,7 @@ public interface ReportService {
      * @param reportId      举报ID
      * @param result        审核结果: approved/rejected
      * @param reviewComment 审核备注
+     * @param penaltyType   处罚类型: null/warning/mute_24h/mute_7d/ban
      */
-    void reviewReport(Long reviewerId, Long reportId, String result, String reviewComment);
+    void reviewReport(Long reviewerId, Long reportId, String result, String reviewComment, String penaltyType);
 }

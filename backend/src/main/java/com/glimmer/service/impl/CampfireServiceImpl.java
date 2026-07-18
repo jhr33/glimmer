@@ -17,6 +17,7 @@ import com.glimmer.mapper.CampfireMessageMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.CampfireService;
+import com.glimmer.service.UserService;
 import com.glimmer.service.dto.CampfireMessageVO;
 import com.glimmer.service.dto.CampfireVO;
 import lombok.extern.slf4j.Slf4j;
@@ -47,19 +48,22 @@ public class CampfireServiceImpl implements CampfireService {
     private final UserMapper userMapper;
     private final TokenTransactionMapper tokenTransactionMapper;
     private final SimpMessagingTemplate messagingTemplate;
+    private final UserService userService;
 
     public CampfireServiceImpl(CampfireMapper campfireMapper,
                                CampfireMemberMapper campfireMemberMapper,
                                CampfireMessageMapper campfireMessageMapper,
                                UserMapper userMapper,
                                TokenTransactionMapper tokenTransactionMapper,
-                               SimpMessagingTemplate messagingTemplate) {
+                               SimpMessagingTemplate messagingTemplate,
+                               UserService userService) {
         this.campfireMapper = campfireMapper;
         this.campfireMemberMapper = campfireMemberMapper;
         this.campfireMessageMapper = campfireMessageMapper;
         this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
         this.messagingTemplate = messagingTemplate;
+        this.userService = userService;
     }
 
     @Override
@@ -79,7 +83,7 @@ public class CampfireServiceImpl implements CampfireService {
     @Transactional(rollbackFor = Exception.class)
     public CampfireVO createCampfire(Long userId, String name, int maxMembers) {
         // 1. 校验用户非 banned
-        User user = checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
 
         // 2. 校验 maxMembers ∈ {10, 20, 30}
         Integer tokenCost = MAX_MEMBERS_TOKEN_COST.get(maxMembers);
@@ -88,6 +92,10 @@ public class CampfireServiceImpl implements CampfireService {
         }
 
         // 3. 校验代币余额
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
         if (user.getTokenBalance() == null || user.getTokenBalance() < tokenCost) {
             throw new BusinessException(ErrorCode.TOKEN_NOT_ENOUGH);
         }
@@ -247,10 +255,15 @@ public class CampfireServiceImpl implements CampfireService {
     @Transactional(rollbackFor = Exception.class)
     public CampfireMessageVO sendMessage(Long userId, Long campfireId, String content) {
         // 1. 校验用户非 banned
-        User user = checkUserNotBanned(userId);
+        userService.checkUserNotMuted(userId);
         // 2. 校验用户是该篝火成员
         checkCampfireMember(userId, campfireId);
-        // 3. 插入消息（anonymous_name 冗余存储）
+        // 3. 获取用户信息
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
+        // 4. 插入消息（anonymous_name 冗余存储）
         LocalDateTime now = LocalDateTime.now();
         CampfireMessage message = new CampfireMessage();
         message.setCampfireId(campfireId);
@@ -270,20 +283,6 @@ public class CampfireServiceImpl implements CampfireService {
     }
 
     // ==================== 私有辅助方法 ====================
-
-    /**
-     * 校验用户非 banned
-     */
-    private User checkUserNotBanned(Long userId) {
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
-        }
-        return user;
-    }
 
     /**
      * 校验当前用户是该篝火成员

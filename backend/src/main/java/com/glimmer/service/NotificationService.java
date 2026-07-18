@@ -40,4 +40,17 @@ public interface NotificationService {
      * @param refId   关联ID
      */
     void sendNotification(Long userId, String type, String title, String content, String refType, Long refId);
+
+    /**
+     * 内部方法：发送通知（带额外信息）
+     *
+     * @param userId  接收用户ID
+     * @param type    通知类型
+     * @param title   标题
+     * @param content 内容
+     * @param refType 关联类型
+     * @param refId   关联ID
+     * @param extra   额外信息（JSON格式）
+     */
+    void sendNotification(Long userId, String type, String title, String content, String refType, Long refId, String extra);
 }

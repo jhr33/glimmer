@@ -24,4 +24,8 @@ public class ReportVO {
     private String reviewComment;
     private LocalDateTime reviewedAt;
     private LocalDateTime createdAt;
+    /** 处罚类型: warning/mute_24h/mute_7d/ban */
+    private String penaltyType;
+    /** 申诉次数 */
+    private Integer appealCount;
 }
