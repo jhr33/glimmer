@@ -16,7 +16,6 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.List;
@@ -31,6 +30,9 @@ import java.util.stream.Collectors;
 @Slf4j
 @Service
 public class FlowerServiceImpl implements FlowerService {
+
+    /** 每次浇水消耗的萤火余额 */
+    private static final int WATER_COST = 2;
 
     private final FlowerMapper flowerMapper;
     private final FlowerTypeMapper flowerTypeMapper;
@@ -137,12 +139,19 @@ public class FlowerServiceImpl implements FlowerService {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "花朵已开花，无需浇水");
         }
 
-        // 3. 校验今日未浇水
-        if (flower.getLastWaterAt() != null) {
-            LocalDate lastWaterDate = flower.getLastWaterAt().toLocalDate();
-            if (lastWaterDate.equals(LocalDate.now())) {
-                throw new BusinessException(ErrorCode.ALREADY_WATERED_TODAY);
-            }
+        // 3. 校验并扣除萤火余额（每次浇水消耗 WATER_COST 萤火，不限制每日次数）
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
+        int fireflyBalance = user.getFireflyBalance() == null ? 0 : user.getFireflyBalance();
+        if (fireflyBalance < WATER_COST) {
+            throw new BusinessException(ErrorCode.FIREFLY_BALANCE_NOT_ENOUGH);
+        }
+        user.setFireflyBalance(fireflyBalance - WATER_COST);
+        boolean updated = userMapper.updateById(user) > 0;
+        if (!updated) {
+            throw new BusinessException(ErrorCode.CONFLICT, "萤火扣减冲突，请重试");
         }
 
         // 4. stage_water_count += 1, last_water_at = now()
@@ -167,8 +176,8 @@ public class FlowerServiceImpl implements FlowerService {
 
         // 持久化更新
         flowerMapper.updateById(flower);
-        log.info("浇水成功: userId={}, flowerId={}, stage={}, stageWaterCount={}",
-                userId, flowerId, flower.getStage(), flower.getStageWaterCount());
+        log.info("浇水成功: userId={}, flowerId={}, stage={}, stageWaterCount={}, cost={}萤火",
+                userId, flowerId, flower.getStage(), flower.getStageWaterCount(), WATER_COST);
 
         return toVO(flower, flowerType);
     }

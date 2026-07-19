@@ -64,6 +64,12 @@ const routes = [
     meta: { requiresAuth: true, title: '萤火花园' }
   },
   {
+    path: '/garden/detail',
+    name: 'gardenDetail',
+    component: () => import('@/views/garden/GardenDetailView.vue'),
+    meta: { requiresAuth: true, title: '花园详情' }
+  },
+  {
     path: '/notifications',
     name: 'notifications',
     component: () => import('@/views/notification/NotificationListView.vue'),
