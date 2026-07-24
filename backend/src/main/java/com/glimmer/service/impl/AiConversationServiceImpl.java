@@ -24,10 +24,13 @@ import com.glimmer.service.dto.AiConversationVO;
 import com.glimmer.service.dto.AiMessageVO;
 import com.glimmer.service.dto.ConversationDetailVO;
 import com.glimmer.service.dto.SendMessageResponse;
+import com.glimmer.service.dto.StreamMessageDTO;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
@@ -244,6 +247,218 @@ public class AiConversationServiceImpl implements AiConversationService {
         }
         closeConversationInternal(conversation);
         log.info("AI 会话主动关闭: userId={}, conversationId={}", userId, conversationId);
+    }
+
+    @Override
+    public void sendMessageStream(Long userId, Long conversationId, String content, SseEmitter emitter, ObjectMapper objectMapper) {
+        AiConversation conversation = null;
+        AiMessage userMessage = null;
+        int maxMessages = MAX_MESSAGES;
+        int newCountAfterUser = 0;
+
+        try {
+            // 1. 校验会话属于当前用户
+            conversation = checkConversationOwner(userId, conversationId);
+
+            // 2. 校验 status='active'
+            if (!"active".equals(conversation.getStatus())) {
+                sendError(emitter, objectMapper, "会话已关闭");
+                return;
+            }
+
+            // 3. 校验 message_count < max_messages
+            maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : MAX_MESSAGES;
+            if (conversation.getMessageCount() != null && conversation.getMessageCount() >= maxMessages) {
+                closeConversationInternal(conversation);
+                sendError(emitter, objectMapper, "会话已关闭");
+                return;
+            }
+
+            LocalDateTime now = LocalDateTime.now();
+
+            // 4. 插入 ai_message（role='user'）
+            userMessage = new AiMessage();
+            userMessage.setConversationId(conversationId);
+            userMessage.setRole("user");
+            userMessage.setContent(content);
+            userMessage.setCreatedAt(now);
+            aiMessageMapper.insert(userMessage);
+
+            // 5. 更新 message_count += 1, last_active_at
+            newCountAfterUser = (conversation.getMessageCount() == null ? 0 : conversation.getMessageCount()) + 1;
+            updateConversationStats(conversationId, newCountAfterUser, now);
+
+            // 6. 拉取历史消息并构建上下文（含摘要优化）
+            List<DeepSeekMessage> deepSeekMessages = buildContextWithSummary(userId, conversationId, content);
+
+            // 7. 流式调用 DeepSeek（使用回调方式）
+            StringBuilder fullContent = new StringBuilder();
+
+            deepSeekClient.chatCompletionStream(deepSeekMessages, new DeepSeekClient.StreamCallback() {
+                @Override
+                public void onDelta(String delta) {
+                    fullContent.append(delta);
+                    sendDelta(emitter, objectMapper, delta);
+                }
+
+                @Override
+                public void onError(Exception e) {
+                    log.error("AI 流式调用异常", e);
+                    sendError(emitter, objectMapper, "AI 服务暂时不可用");
+                }
+            });
+
+            // 流式调用完成后，保存 AI 消息并返回最终状态
+            try {
+                String finalContent = fullContent.toString();
+                if (finalContent.isEmpty()) {
+                    finalContent = "（AI 暂未返回内容）";
+                }
+
+                LocalDateTime aiTime = LocalDateTime.now();
+                AiMessage aiMessage = new AiMessage();
+                aiMessage.setConversationId(conversationId);
+                aiMessage.setRole("ai");
+                aiMessage.setContent(finalContent);
+                aiMessage.setCreatedAt(aiTime);
+                aiMessageMapper.insert(aiMessage);
+
+                // 更新会话状态
+                int count = newCountAfterUser + 1;
+                boolean shouldClose = count >= maxMessages;
+                if (shouldClose) {
+                    aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                            .eq(AiConversation::getId, conversationId)
+                            .set(AiConversation::getMessageCount, count)
+                            .set(AiConversation::getLastActiveAt, aiTime)
+                            .set(AiConversation::getStatus, "closed"));
+                } else {
+                    updateConversationStats(conversationId, count, aiTime);
+                }
+
+                log.info("AI 流式消息发送成功: userId={}, conversationId={}, messageCount={}", userId, conversationId, count);
+
+                sendFinal(emitter, objectMapper, toMessageVO(aiMessage), toMessageVO(userMessage),
+                        shouldClose ? "closed" : "active", count, maxMessages);
+            } catch (Exception e) {
+                log.error("保存 AI 消息失败", e);
+                sendError(emitter, objectMapper, "保存消息失败");
+            }
+
+        } catch (BusinessException e) {
+            sendError(emitter, objectMapper, e.getMessage());
+        } catch (Exception e) {
+            log.error("发送消息前置操作失败", e);
+            sendError(emitter, objectMapper, "发送失败");
+        }
+    }
+
+    private void sendDelta(SseEmitter emitter, ObjectMapper objectMapper, String delta) {
+        try {
+            StreamMessageDTO dto = StreamMessageDTO.delta(delta);
+            String json = objectMapper.writeValueAsString(dto);
+            emitter.send(SseEmitter.event().data(json));
+        } catch (Exception e) {
+            log.error("发送增量消息失败", e);
+        }
+    }
+
+    private void sendFinal(SseEmitter emitter, ObjectMapper objectMapper, AiMessageVO aiMessage, AiMessageVO userMessage,
+                           String conversationStatus, Integer messageCount, Integer maxMessages) {
+        try {
+            StreamMessageDTO dto = StreamMessageDTO.finalMessage(aiMessage, userMessage, conversationStatus, messageCount, maxMessages);
+            String json = objectMapper.writeValueAsString(dto);
+            emitter.send(SseEmitter.event().data(json));
+            emitter.complete();
+        } catch (Exception e) {
+            log.error("发送最终消息失败", e);
+            emitter.completeWithError(e);
+        }
+    }
+
+    private void sendError(SseEmitter emitter, ObjectMapper objectMapper, String error) {
+        try {
+            StreamMessageDTO dto = StreamMessageDTO.error(error);
+            String json = objectMapper.writeValueAsString(dto);
+            emitter.send(SseEmitter.event().data(json));
+            emitter.complete();
+        } catch (Exception e) {
+            log.error("发送错误消息失败", e);
+            emitter.completeWithError(e);
+        }
+    }
+
+    /**
+     * 构建上下文消息（含长上下文摘要优化）
+     */
+    private List<DeepSeekMessage> buildContextWithSummary(Long userId, Long conversationId, String currentContent) {
+        List<DeepSeekMessage> messages = new ArrayList<>();
+
+        // 添加系统提示词
+        String systemPrompt = deepSeekProperties.getSystemPrompt();
+        if (StringUtils.hasText(systemPrompt)) {
+            messages.add(new DeepSeekMessage("system", systemPrompt));
+        }
+
+        // 拉取历史消息（不包含刚刚插入的当前用户消息）
+        int maxContext = deepSeekProperties.getMaxContextMessages();
+        Page<AiMessage> contextPage = new Page<>(1, maxContext);
+        LambdaQueryWrapper<AiMessage> contextWrapper = new LambdaQueryWrapper<AiMessage>()
+                .eq(AiMessage::getConversationId, conversationId)
+                .orderByDesc(AiMessage::getCreatedAt);
+        IPage<AiMessage> contextResult = aiMessageMapper.selectPage(contextPage, contextWrapper);
+        List<AiMessage> history = contextResult.getRecords();
+
+        // 如果历史消息过多，进行摘要优化
+        if (history.size() > 4) {
+            // 保留最近的 2 轮对话作为详细上下文
+            // 更早的对话合并为摘要
+            List<AiMessage> recentHistory = new ArrayList<>();
+            List<AiMessage> oldHistory = new ArrayList<>();
+
+            for (int i = 0; i < history.size(); i++) {
+                if (i < 4) { // 最近的 2 轮（用户+AI）
+                    recentHistory.add(history.get(i));
+                } else {
+                    oldHistory.add(history.get(i));
+                }
+            }
+
+            // 构建旧对话摘要
+            if (!oldHistory.isEmpty()) {
+                StringBuilder summary = new StringBuilder("【历史对话摘要】\n");
+                for (AiMessage m : oldHistory) {
+                    String roleName = "user".equals(m.getRole()) ? "用户" : "AI";
+                    // 截取每条消息的前 100 字
+                    String msgContent = m.getContent();
+                    if (msgContent.length() > 100) {
+                        msgContent = msgContent.substring(0, 100) + "...";
+                    }
+                    summary.append(roleName).append(": ").append(msgContent).append("\n");
+                }
+                summary.append("【摘要结束】");
+                messages.add(new DeepSeekMessage("system", summary.toString()));
+            }
+
+            // 添加最近的详细对话（反转回正序）
+            java.util.Collections.reverse(recentHistory);
+            for (AiMessage m : recentHistory) {
+                String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
+                messages.add(new DeepSeekMessage(role, m.getContent()));
+            }
+        } else {
+            // 历史消息较少，直接使用
+            java.util.Collections.reverse(history);
+            for (AiMessage m : history) {
+                String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
+                messages.add(new DeepSeekMessage(role, m.getContent()));
+            }
+        }
+
+        // 添加当前用户消息到上下文（关键！）
+        messages.add(new DeepSeekMessage("user", currentContent));
+
+        return messages;
     }
 
     // ==================== 私有辅助方法 ====================

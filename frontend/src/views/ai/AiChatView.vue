@@ -1,12 +1,12 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref } from 'vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { nextTick, onMounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   createConversation,
   getConversations,
   getConversation,
   sendMessage,
-  closeConversation
+  sendMessageFetchStream
 } from '@/api/ai'
 import { useUserStore } from '@/stores/user'
 
@@ -32,6 +32,10 @@ const inputContent = ref('')
 const sending = ref(false)
 const messageListRef = ref(null)
 
+// 流式回复相关
+const streamingAiMessageId = ref(null)
+const streamingAiContent = ref('')
+
 // 兼容分页结构
 function pickList(data) {
   if (!data) return []
@@ -46,23 +50,6 @@ function pickTotal(data) {
 
 function conversationIdOf(c) {
   return c?.id ?? c?.conversationId ?? c?.conversation_id
-}
-
-function statusLabel(s) {
-  if (s === 'active') return '进行中'
-  if (s === 'closed') return '已关闭'
-  if (s === 'timeout') return '已超时'
-  return s || '-'
-}
-function statusTagType(s) {
-  if (s === 'active') return 'success'
-  if (s === 'closed') return 'info'
-  if (s === 'timeout') return 'warning'
-  return 'info'
-}
-
-function formatTime(t) {
-  return t || '-'
 }
 
 // 会话是否可发送消息
@@ -118,13 +105,10 @@ async function handleNewConversation() {
   try {
     const res = await createConversation()
     ElMessage.success('已开启新对话（消耗 1 代币）')
-    // 直接进入新会话
     await openConversation(res.data)
-    // 刷新列表
     fetchList()
   } catch (e) {
     handleBanned(e)
-    // 4003 代币不足：错误信息已由拦截器提示，这里无需额外处理
   }
 }
 
@@ -173,51 +157,87 @@ async function handleSend() {
     return
   }
   sending.value = true
-  // 先乐观追加用户消息
-  const tempUserMsg = {
+  
+  // 添加用户消息
+  const userMsg = {
     id: `temp-${Date.now()}`,
     role: 'user',
     content,
     createdAt: nowStr()
   }
-  messages.value.push(tempUserMsg)
+  messages.value.push(userMsg)
   inputContent.value = ''
   await nextTick()
   scrollToBottom()
+  
+  // 添加 AI 流式回复占位
+  streamingAiMessageId.value = `stream-${Date.now()}`
+  streamingAiContent.value = ''
+  messages.value.push({
+    id: streamingAiMessageId.value,
+    role: 'ai',
+    content: '',
+    createdAt: nowStr(),
+    isStreaming: true
+  })
+  await nextTick()
+  scrollToBottom()
+  
   try {
-    const res = await sendMessage(conversationIdOf(c), { content })
-    const data = res.data
-    // 移除临时消息
-    const idx = messages.value.findIndex((m) => m.id === tempUserMsg.id)
-    if (idx >= 0) messages.value.splice(idx, 1)
-    // 追加服务端返回的 user 消息与 ai 消息（避免重复）
-    if (data?.userMessage) {
-      pushIfNotExist(messages.value, data.userMessage)
-    }
-    if (data?.aiMessage) {
-      pushIfNotExist(messages.value, data.aiMessage)
-    }
-    // 更新会话状态
-    if (data?.conversationStatus) {
-      c.status = data.conversationStatus
-    }
-    if (data?.messageCount != null) {
-      c.messageCount = data.messageCount
-    }
-    if (data?.maxMessages != null) {
-      c.maxMessages = data.maxMessages
-    }
-    await nextTick()
-    scrollToBottom()
+    await sendMessageFetchStream(conversationIdOf(c), content, (data) => {
+      if (data.type === 'delta') {
+        // 增量内容，更新流式消息
+        streamingAiContent.value += data.delta || ''
+        const aiMsgIdx = messages.value.findIndex(m => m.id === streamingAiMessageId.value)
+        if (aiMsgIdx >= 0) {
+          messages.value[aiMsgIdx].content = streamingAiContent.value
+        }
+        nextTick().then(() => scrollToBottom())
+      } else if (data.type === 'final') {
+        // 回复结束，替换为完整消息
+        const aiMsgIdx = messages.value.findIndex(m => m.id === streamingAiMessageId.value)
+        if (aiMsgIdx >= 0) {
+          messages.value.splice(aiMsgIdx, 1)
+        }
+        if (data.userMessage) {
+          const tempIdx = messages.value.findIndex(m => m.id === userMsg.id)
+          if (tempIdx >= 0) {
+            messages.value.splice(tempIdx, 1)
+          }
+          pushIfNotExist(messages.value, data.userMessage)
+        }
+        if (data.aiMessage) {
+          pushIfNotExist(messages.value, data.aiMessage)
+        }
+        if (data.conversationStatus) {
+          c.status = data.conversationStatus
+        }
+        if (data.messageCount != null) {
+          c.messageCount = data.messageCount
+        }
+        if (data.maxMessages != null) {
+          c.maxMessages = data.maxMessages
+        }
+        streamingAiMessageId.value = null
+        streamingAiContent.value = ''
+        nextTick().then(() => scrollToBottom())
+      } else if (data.type === 'error') {
+        // 错误处理
+        throw new Error(data.error)
+      }
+    })
   } catch (e) {
-    // 移除临时消息，避免误导
-    const idx = messages.value.findIndex((m) => m.id === tempUserMsg.id)
-    if (idx >= 0) messages.value.splice(idx, 1)
+    const aiMsgIdx = messages.value.findIndex(m => m.id === streamingAiMessageId.value)
+    if (aiMsgIdx >= 0) {
+      messages.value.splice(aiMsgIdx, 1)
+    }
+    streamingAiMessageId.value = null
+    streamingAiContent.value = ''
     handleBanned(e)
-    // 4010 会话已关闭：同步状态
     if (e?.code === 4010 && activeConversation.value) {
       activeConversation.value.status = 'closed'
     }
+    ElMessage.error(e.message || '发送失败')
   } finally {
     sending.value = false
   }
@@ -245,29 +265,6 @@ function scrollToBottom() {
 
 function isUserMsg(m) {
   return m?.role === 'user'
-}
-
-// === 关闭会话 ===
-
-async function handleClose() {
-  const c = activeConversation.value
-  if (!c) return
-  try {
-    await ElMessageBox.confirm('关闭后将无法继续发送消息，确定关闭当前会话吗？', '关闭会话', {
-      type: 'warning',
-      confirmButtonText: '关闭',
-      cancelButtonText: '取消'
-    })
-  } catch (e) {
-    return
-  }
-  try {
-    await closeConversation(conversationIdOf(c))
-    ElMessage.success('会话已关闭')
-    c.status = 'closed'
-  } catch (e) {
-    handleBanned(e)
-  }
 }
 
 onMounted(() => {
@@ -309,13 +306,7 @@ onMounted(() => {
             <div class="conv-main">
               <div class="conv-title">会话 #{{ conversationIdOf(c) }}</div>
               <div class="conv-meta">
-                <el-tag size="small" :type="statusTagType(c.status)">
-                  {{ statusLabel(c.status) }}
-                </el-tag>
-                <span class="meta-text">
-                  消息：{{ c.messageCount ?? c.message_count ?? 0 }}/{{ c.maxMessages ?? c.max_messages ?? 100 }}
-                </span>
-                <span class="meta-text">{{ formatTime(c.createdAt || c.created_at) }}</span>
+                <span class="meta-text">消息：{{ c.messageCount ?? c.message_count ?? 0 }}/{{ c.maxMessages ?? c.max_messages ?? 100 }}</span>
               </div>
             </div>
             <el-button size="small" @click.stop="openConversation(c)">查看</el-button>
@@ -337,65 +328,35 @@ onMounted(() => {
 
     <!-- 对话详情 -->
     <div v-else class="detail-scene">
+      <!-- 顶部：只显示 AI 名字 glimmer -->
       <div class="detail-header">
-        <div class="detail-title">
-          <span class="title-text">会话 #{{ conversationIdOf(activeConversation) }}</span>
-          <el-tag size="small" :type="statusTagType(activeConversation?.status)">
-            {{ statusLabel(activeConversation?.status) }}
-          </el-tag>
-          <span class="msg-count">
-            消息：{{ activeConversation?.messageCount ?? activeConversation?.message_count ?? 0 }}/{{ activeConversation?.maxMessages ?? activeConversation?.max_messages ?? 100 }}
-          </span>
-        </div>
-        <div class="detail-actions">
-          <el-button size="small" @click="backToList">返回列表</el-button>
-          <el-button
-            size="small"
-            type="danger"
-            plain
-            :disabled="activeConversation?.status !== 'active'"
-            @click="handleClose"
-          >
-            关闭会话
-          </el-button>
-        </div>
+        <div class="ai-name">✨ glimmer</div>
+        <button class="back-btn" @click="backToList">← 返回</button>
       </div>
 
-      <el-card shadow="never" class="chat-body" body-class="chat-body-inner">
-        <div class="message-list" ref="messageListRef">
-          <el-empty
-            v-if="messages.length === 0"
-            description="打个招呼吧，AI 正在等你"
-            :image-size="80"
-          />
-          <div
-            v-for="m in messages"
-            :key="m.id ?? m.messageId"
-            class="message-item"
-            :class="{ mine: isUserMsg(m) }"
-          >
-            <div class="bubble">
-              <div class="bubble-role">{{ isUserMsg(m) ? '我' : 'AI' }}</div>
-              <div class="bubble-content">{{ m.content }}</div>
-              <div class="bubble-time">{{ formatTime(m.createdAt || m.created_at) }}</div>
-            </div>
-          </div>
-          <div v-if="sending" class="message-item">
-            <div class="bubble ai-typing">
-              <div class="bubble-role">AI</div>
-              <div class="typing-dots">
-                <span></span><span></span><span></span>
-              </div>
-            </div>
-          </div>
+      <!-- 消息列表：只显示内容 -->
+      <div class="message-list" ref="messageListRef">
+        <div v-if="messages.length === 0" class="empty-tip">
+          <div class="empty-icon">💬</div>
+          <div class="empty-text">开始与 glimmer 对话吧</div>
         </div>
-      </el-card>
+        <div
+          v-for="m in messages"
+          :key="m.id ?? m.messageId"
+          class="message-item"
+          :class="{ mine: isUserMsg(m) }"
+        >
+          <div class="message-content">{{ m.content }}</div>
+        </div>
+        
+      </div>
 
+      <!-- 输入框 -->
       <div class="chat-input">
         <template v-if="canSend()">
           <el-input
             v-model="inputContent"
-            placeholder="写下你想说的话…"
+            placeholder="输入消息…"
             maxlength="500"
             :disabled="isBanned"
             @keyup.enter="handleSend"
@@ -505,113 +466,96 @@ onMounted(() => {
   height: calc(100vh - 180px);
   min-height: 480px;
 }
+
+/* 顶部：AI 名字 */
 .detail-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 8px 4px 12px;
-  flex-wrap: wrap;
+  padding: 16px 20px;
+  background: #ffffff;
+  border-bottom: 1px solid #dcdfe6;
 }
-.detail-title {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.title-text {
-  font-size: 18px;
-  font-weight: 600;
+.ai-name {
+  font-size: 20px;
+  font-weight: bold;
   color: #303133;
 }
-.msg-count {
-  font-size: 13px;
+.back-btn {
+  padding: 8px 16px;
+  border-radius: 8px;
+  background: #f5f7fa;
+  border: 1px solid #dcdfe6;
+  color: #606266;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.back-btn:hover {
+  background: #e4e7ed;
+}
+
+/* 消息列表 */
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  background: #ffffff;
+}
+
+.empty-tip {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 0;
+}
+.empty-icon {
+  font-size: 48px;
+  margin-bottom: 12px;
+}
+.empty-text {
+  font-size: 16px;
   color: #909399;
 }
-.detail-actions {
-  display: flex;
-  gap: 8px;
-}
-.chat-body {
-  flex: 1;
-  min-height: 0;
-  border-radius: 10px;
-}
-:deep(.chat-body-inner) {
-  padding: 0;
-  height: 100%;
-}
-.message-list {
-  height: 100%;
-  overflow-y: auto;
-  padding: 16px;
-  box-sizing: border-box;
-}
+
 .message-item {
   display: flex;
-  margin-bottom: 12px;
+  margin-bottom: 16px;
 }
 .message-item.mine {
   justify-content: flex-end;
 }
-.bubble {
-  max-width: 70%;
-  padding: 10px 14px;
-  border-radius: 12px;
-  background: #f4f4f5;
-  color: #303133;
-  word-break: break-word;
-}
-.message-item.mine .bubble {
-  background: linear-gradient(135deg, #f5a623 0%, #ffd970 100%);
-  color: #3a2a00;
-}
-.bubble-role {
-  font-size: 12px;
-  font-weight: 600;
-  margin-bottom: 4px;
-  opacity: 0.85;
-}
-.bubble-content {
-  font-size: 14px;
+
+.message-content {
+  max-width: 75%;
+  padding: 12px 18px;
+  border-radius: 16px;
+  font-size: 15px;
   line-height: 1.6;
+  word-break: break-word;
   white-space: pre-wrap;
 }
-.bubble-time {
-  font-size: 11px;
-  margin-top: 4px;
-  opacity: 0.7;
+.message-item:not(.mine) .message-content {
+  background: #ffffff;
+  color: #303133;
+  border: 1px solid #dcdfe6;
 }
-.ai-typing {
-  display: inline-block;
+.message-item.mine .message-content {
+  background: #e3f2fd;
+  color: #303133;
 }
-.typing-dots {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  padding: 4px 0;
+
+/* 流式消息样式 */
+.message-item .message-content {
+  transition: opacity 0.1s ease;
 }
-.typing-dots span {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #c0c4cc;
-  animation: typing 1.2s infinite ease-in-out;
-}
-.typing-dots span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-.typing-dots span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-@keyframes typing {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-4px); opacity: 1; }
-}
+
+/* 输入框 */
 .chat-input {
   display: flex;
   gap: 10px;
-  padding: 12px 4px 4px;
-  align-items: center;
+  padding: 12px 20px;
+  background: #f5f7fa;
+  border-top: 1px solid #dcdfe6;
 }
 </style>

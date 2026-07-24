@@ -4,6 +4,8 @@ import com.glimmer.common.response.PageResult;
 import com.glimmer.service.dto.AiConversationVO;
 import com.glimmer.service.dto.ConversationDetailVO;
 import com.glimmer.service.dto.SendMessageResponse;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 /**
  * AI 对话服务接口
@@ -30,6 +32,11 @@ public interface AiConversationService {
      * 发送消息（同步返回 AI 回复）
      */
     SendMessageResponse sendMessage(Long userId, Long conversationId, String content);
+
+    /**
+     * 发送消息（流式返回 AI 回复）
+     */
+    void sendMessageStream(Long userId, Long conversationId, String content, SseEmitter emitter, ObjectMapper objectMapper);
 
     /**
      * 主动关闭会话
