@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useRouter, onBeforeRouteLeave } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -103,8 +103,10 @@ function formatTime(t) {
 }
 
 function handleBanned(e) {
-  if (e?.code === 4015) {
+  if (e?.code === 4015 || e?.code === 4019) {
     isBanned.value = true
+    // 刷新用户信息同步封禁状态
+    userStore.fetchUserInfo().catch(() => {})
   }
 }
 
@@ -348,10 +350,13 @@ function isMine(msg) {
   return msg.userId === uid || msg.user_id === uid
 }
 
+// 监听用户信息变化，自动同步封禁状态
+watch(() => userStore.userInfo?.status, () => {
+  isBanned.value = userStore.userInfo?.status === 'banned'
+})
+
 onMounted(() => {
-  if (userStore.userInfo?.status === 'banned') {
-    isBanned.value = true
-  }
+  isBanned.value = userStore.userInfo?.status === 'banned'
   fetchList()
 })
 

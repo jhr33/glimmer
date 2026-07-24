@@ -29,6 +29,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Collections;
 import java.util.HashMap;
@@ -105,7 +106,17 @@ public class ReportServiceImpl implements ReportService {
             throw new BusinessException(ErrorCode.ALREADY_REPORTED);
         }
 
-        // 5. 被举报人 pending_report_count += 1（乐观锁 @Version）
+        // 5. 查询当天该用户被举报次数
+        LocalDate today = LocalDate.now();
+        LocalDateTime startOfDay = today.atStartOfDay();
+        LocalDateTime endOfDay = today.atTime(23, 59, 59);
+        Long todayReportCountLong = reportMapper.selectCount(new LambdaQueryWrapper<Report>()
+                .eq(Report::getTargetUserId, targetUserId)
+                .ge(Report::getCreatedAt, startOfDay)
+                .le(Report::getCreatedAt, endOfDay));
+        int todayReportCount = todayReportCountLong != null ? todayReportCountLong.intValue() : 0;
+
+        // 6. 更新被举报人 pending_report_count（乐观锁 @Version）
         User targetUser = userMapper.selectById(targetUserId);
         if (targetUser == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "被举报用户不存在");
@@ -113,10 +124,12 @@ public class ReportServiceImpl implements ReportService {
         int newCount = (targetUser.getPendingReportCount() == null ? 0 : targetUser.getPendingReportCount()) + 1;
         targetUser.setPendingReportCount(newCount);
 
-        // 6. 若达到阈值则自动封禁
-        boolean shouldBan = newCount >= BAN_THRESHOLD && !"banned".equals(targetUser.getStatus());
+        // 7. 若一天内被举报超过3次，则自动永久封禁
+        boolean shouldBan = todayReportCount > 3 && !"banned".equals(targetUser.getStatus());
         if (shouldBan) {
             targetUser.setStatus("banned");
+            targetUser.setMuteType("ban");
+            targetUser.setMuteEndTime(null);
         }
 
         boolean updated = userMapper.updateById(targetUser) > 0;
@@ -287,18 +300,22 @@ public class ReportServiceImpl implements ReportService {
 
     private void applyPenalty(User user, String penaltyType) {
         user.setMuteType(penaltyType);
-        if ("ban".equals(penaltyType)) {
+        if ("warning".equals(penaltyType)) {
+            // 警告不限制发言，状态保持正常
+            user.setStatus("active");
+            user.setMuteEndTime(null);
+        } else if ("ban".equals(penaltyType)) {
+            // 永久封禁
             user.setStatus("banned");
             user.setMuteEndTime(null);
         } else {
-            user.setStatus("active");
+            // 禁言（mute_24h/mute_7d）：状态设为封禁
+            user.setStatus("banned");
             LocalDateTime now = LocalDateTime.now();
             if ("mute_24h".equals(penaltyType)) {
                 user.setMuteEndTime(now.plusHours(24));
             } else if ("mute_7d".equals(penaltyType)) {
                 user.setMuteEndTime(now.plusDays(7));
-            } else if ("warning".equals(penaltyType)) {
-                user.setMuteEndTime(null);
             }
         }
     }

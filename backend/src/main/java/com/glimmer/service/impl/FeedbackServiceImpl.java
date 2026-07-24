@@ -345,41 +345,81 @@ public class FeedbackServiceImpl implements FeedbackService {
         feedbackMapper.updateById(feedback);
 
         if ("approved".equals(result)) {
+            // 申诉通过，解除或变更处罚
+            // 优先使用举报关联的用户ID，如果没有则使用申诉人自己的ID
+            Long targetUserId = feedback.getUserId(); // 默认使用申诉人ID
+            log.info("申诉审核通过: feedbackId={}, feedbackUserId={}, reportId={}", 
+                    feedbackId, feedback.getUserId(), feedback.getReportId());
+            
             if (feedback.getReportId() != null) {
                 Report report = reportMapper.selectById(feedback.getReportId());
                 if (report != null && report.getTargetUserId() != null) {
-                    User targetUser = userMapper.selectById(report.getTargetUserId());
-                    if (targetUser != null) {
-                        if (newPenaltyType == null) {
-                            targetUser.setMuteType(null);
-                            targetUser.setMuteEndTime(null);
-                            if ("banned".equals(targetUser.getStatus())) {
-                                targetUser.setStatus("active");
-                            }
-                        } else {
-                            applyPenalty(targetUser, newPenaltyType);
-                        }
-                        userMapper.updateById(targetUser);
-                    }
+                    targetUserId = report.getTargetUserId();
+                    log.info("使用举报关联用户ID: reportId={}, targetUserId={}", feedback.getReportId(), targetUserId);
+                } else {
+                    log.info("举报记录不存在或无目标用户，使用申诉人ID: feedbackUserId={}", feedback.getUserId());
                 }
             }
+            
+            // 根据目标用户ID更新处罚状态（乐观锁 @Version）
+            User targetUser = userMapper.selectById(targetUserId);
+            if (targetUser != null) {
+                log.info("找到目标用户: userId={}, username={}, status={}, muteType={}, muteEndTime={}, version={}", 
+                        targetUserId, targetUser.getUsername(), targetUser.getStatus(), 
+                        targetUser.getMuteType(), targetUser.getMuteEndTime(), targetUser.getVersion());
+                if (!StringUtils.hasText(newPenaltyType)) {
+                    // 解除处罚：清除所有处罚状态
+                    log.info("解除处罚: userId={}, 原status={}, 原muteType={}", targetUserId, targetUser.getStatus(), targetUser.getMuteType());
+                    targetUser.setMuteType(null);
+                    targetUser.setMuteEndTime(null);
+                    if ("banned".equals(targetUser.getStatus())) {
+                        targetUser.setStatus("active");
+                        log.info("用户状态从 banned 变更为 active");
+                    }
+                } else {
+                    // 变更处罚类型
+                    log.info("变更处罚类型: userId={}, newPenaltyType={}", targetUserId, newPenaltyType);
+                    applyPenalty(targetUser, newPenaltyType);
+                }
+                log.info("准备更新用户: userId={}, 更新后status={}, 更新后muteType={}, 更新后muteEndTime={}, version={}", 
+                        targetUserId, targetUser.getStatus(), targetUser.getMuteType(), 
+                        targetUser.getMuteEndTime(), targetUser.getVersion());
+                int updateCount = userMapper.updateById(targetUser);
+                log.info("用户更新结果: userId={}, updateCount={}", targetUserId, updateCount);
+                boolean updated = updateCount > 0;
+                if (!updated) {
+                    throw new BusinessException(ErrorCode.CONFLICT, "处罚状态更新冲突，请重试");
+                }
+                log.info("申诉处罚状态已更新成功: userId={}, status={}, muteType={}, muteEndTime={}", 
+                        targetUserId, targetUser.getStatus(), targetUser.getMuteType(), targetUser.getMuteEndTime());
+            }
 
-            notificationService.sendNotification(
-                    feedback.getUserId(),
-                    "appeal_result",
-                    "申诉审核结果",
-                    "您的申诉已通过，处罚已" + (newPenaltyType == null ? "解除" : "变更为" + describePenaltyType(newPenaltyType)) + "。" +
-                            (StringUtils.hasText(reply) ? "审核备注：" + reply : ""),
-                    "feedback",
-                    feedbackId);
+            // 发送通知（独立 try-catch，避免通知失败影响用户状态更新）
+            try {
+                notificationService.sendNotification(
+                        feedback.getUserId(),
+                        "appeal_result",
+                        "申诉审核结果",
+                        "您的申诉已通过，处罚已" + (!StringUtils.hasText(newPenaltyType) ? "解除" : "变更为" + describePenaltyType(newPenaltyType)) + "。" +
+                                (StringUtils.hasText(reply) ? "审核备注：" + reply : ""),
+                        "feedback",
+                        feedbackId);
+            } catch (Exception e) {
+                log.error("发送申诉通知失败: userId={}, feedbackId={}", feedback.getUserId(), feedbackId, e);
+            }
         } else {
-            notificationService.sendNotification(
-                    feedback.getUserId(),
-                    "appeal_result",
-                    "申诉审核结果",
-                    "您的申诉未通过。" + (StringUtils.hasText(reply) ? "审核备注：" + reply : ""),
-                    "feedback",
-                    feedbackId);
+            // 发送通知（独立 try-catch，避免通知失败影响申诉状态更新）
+            try {
+                notificationService.sendNotification(
+                        feedback.getUserId(),
+                        "appeal_result",
+                        "申诉审核结果",
+                        "您的申诉未通过。" + (StringUtils.hasText(reply) ? "审核备注：" + reply : ""),
+                        "feedback",
+                        feedbackId);
+            } catch (Exception e) {
+                log.error("发送申诉通知失败: userId={}, feedbackId={}", feedback.getUserId(), feedbackId, e);
+            }
         }
 
         log.info("申诉审核完成: feedbackId={}, result={}, adminId={}", feedbackId, result, adminId);
@@ -387,18 +427,22 @@ public class FeedbackServiceImpl implements FeedbackService {
 
     private void applyPenalty(User user, String penaltyType) {
         user.setMuteType(penaltyType);
-        if ("ban".equals(penaltyType)) {
+        if ("warning".equals(penaltyType)) {
+            // 警告不限制发言，状态保持正常
+            user.setStatus("active");
+            user.setMuteEndTime(null);
+        } else if ("ban".equals(penaltyType)) {
+            // 永久封禁
             user.setStatus("banned");
             user.setMuteEndTime(null);
         } else {
-            user.setStatus("active");
+            // 禁言（mute_24h/mute_7d）：状态设为封禁
+            user.setStatus("banned");
             LocalDateTime now = LocalDateTime.now();
             if ("mute_24h".equals(penaltyType)) {
                 user.setMuteEndTime(now.plusHours(24));
             } else if ("mute_7d".equals(penaltyType)) {
                 user.setMuteEndTime(now.plusDays(7));
-            } else if ("warning".equals(penaltyType)) {
-                user.setMuteEndTime(null);
             }
         }
     }

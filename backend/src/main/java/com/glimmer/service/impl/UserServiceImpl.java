@@ -133,15 +133,9 @@ public class UserServiceImpl implements UserService {
     @Override
     public void checkUserNotMuted(Long userId) {
         User user = getUserOrThrow(userId);
+        // 只检查status字段：banned=禁止发言，其他状态都允许发言
         if ("banned".equals(user.getStatus())) {
             throw new BusinessException(ErrorCode.USER_BANNED);
-        }
-        String muteType = user.getMuteType();
-        if (StringUtils.hasText(muteType) && !"warning".equals(muteType)) {
-            LocalDateTime muteEndTime = user.getMuteEndTime();
-            if (muteEndTime == null || muteEndTime.isAfter(LocalDateTime.now())) {
-                throw new BusinessException(ErrorCode.USER_MUTED);
-            }
         }
     }
 
@@ -235,6 +229,9 @@ public class UserServiceImpl implements UserService {
         vo.setNickname(user.getNickname());
         vo.setAnonymousName(user.getAnonymousName());
         vo.setRole(user.getRole());
+        vo.setStatus(user.getStatus());
+        vo.setMuteType(user.getMuteType());
+        vo.setMuteEndTime(user.getMuteEndTime());
         vo.setTokenBalance(user.getTokenBalance());
         vo.setTotalFirefly(user.getTotalFirefly());
         vo.setFireflyBalance(user.getFireflyBalance());

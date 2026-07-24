@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   createConversation,
@@ -66,9 +66,17 @@ function canSend() {
 }
 
 function handleBanned(e) {
-  if (e?.code === 4015) {
+  if (e?.code === 4015 || e?.code === 4019) {
     isBanned.value = true
+    // 刷新用户信息同步封禁状态
+    userStore.fetchUserInfo().catch(() => {})
   }
+}
+
+// 同步用户封禁状态（用于解封后恢复）
+function syncUserStatus() {
+  // 简化检查：只要status是banned就禁止发言
+  isBanned.value = userStore.userInfo?.status === 'banned'
 }
 
 // === 列表 ===
@@ -267,10 +275,13 @@ function isUserMsg(m) {
   return m?.role === 'user'
 }
 
+// 监听用户信息变化，自动同步封禁状态
+watch(() => userStore.userInfo?.status, () => {
+  syncUserStatus()
+})
+
 onMounted(() => {
-  if (userStore.userInfo?.status === 'banned') {
-    isBanned.value = true
-  }
+  syncUserStatus()
   fetchList()
 })
 </script>

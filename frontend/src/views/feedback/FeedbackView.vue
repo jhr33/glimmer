@@ -1,8 +1,10 @@
-<script setup>import { computed, onMounted, reactive, ref } from 'vue';
+<script setup>import { computed, onMounted, reactive, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { createFeedback, createAppeal, getMyFeedbacks } from '@/api/feedback';
 import { useRoute } from 'vue-router';
+import { useUserStore } from '@/stores/user';
 const route = useRoute();
+const userStore = useUserStore();
 const activeTab = ref('feedback');
 const feedbackContent = ref('');
 const appealContent = ref('');
@@ -108,9 +110,11 @@ async function handleFeedbackSubmit() {
  await fetchList();
  }
  catch (e) {
- if (e?.code === 4015) {
+ if (e?.code === 4015 || e?.code === 4019) {
  isBanned.value = true;
  ElMessage.error('账号已被封禁，无法提交意见');
+ // 刷新用户信息同步封禁状态
+ userStore.fetchUserInfo().catch(() => {});
  }
  }
  finally {
@@ -144,12 +148,19 @@ async function handleAppealSubmit() {
  appealSubmitting.value = false;
  }
 }
+// 监听用户信息变化，自动同步封禁状态
+watch(() => userStore.userInfo?.status, () => {
+ isBanned.value = userStore.userInfo?.status === 'banned';
+});
+
 onMounted(() => {
  const reportId = route.query.reportId;
  if (reportId) {
  appealReportId.value = reportId;
  activeTab.value = 'appeal';
  }
+ // 初始化封禁状态
+ isBanned.value = userStore.userInfo?.status === 'banned';
  fetchList();
 });
 </script>

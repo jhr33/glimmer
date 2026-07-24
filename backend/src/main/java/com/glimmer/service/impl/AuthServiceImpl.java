@@ -99,6 +99,9 @@ public class AuthServiceImpl implements AuthService {
         vo.setNickname(user.getNickname());
         vo.setAnonymousName(user.getAnonymousName());
         vo.setRole(user.getRole());
+        vo.setStatus(user.getStatus());
+        vo.setMuteType(user.getMuteType());
+        vo.setMuteEndTime(user.getMuteEndTime());
         vo.setTokenBalance(user.getTokenBalance());
         vo.setTotalFirefly(user.getTotalFirefly());
         vo.setFireflyBalance(user.getFireflyBalance());

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   throwBottle,
@@ -125,10 +125,12 @@ function hasThankedReply(r) {
   return Array.isArray(arr) && currentUserId.value != null && arr.includes(currentUserId.value)
 }
 
-// 处理 4015 封禁
+// 处理 4015/4019 封禁/禁言
 function handleBanned(e) {
-  if (e?.code === 4015) {
+  if (e?.code === 4015 || e?.code === 4019) {
     isBanned.value = true
+    // 刷新用户信息同步封禁状态
+    userStore.fetchUserInfo().catch(() => {})
   }
 }
 
@@ -390,11 +392,14 @@ function previewContent(content) {
   return content.length > 40 ? content.slice(0, 40) + '…' : content
 }
 
+// 监听用户信息变化，自动同步封禁状态
+watch(() => userStore.userInfo?.status, () => {
+  isBanned.value = userStore.userInfo?.status === 'banned'
+})
+
 onMounted(() => {
-  // 进入页面时若已知封禁状态则同步
-  if (userStore.userInfo?.status === 'banned') {
-    isBanned.value = true
-  }
+  // 进入页面时同步封禁状态
+  isBanned.value = userStore.userInfo?.status === 'banned'
 })
 </script>
 
