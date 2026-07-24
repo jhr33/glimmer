@@ -364,44 +364,44 @@ onMounted(() => {
         @click.stop="(e) => handleFlowerClick(e, f)"
       >
         <div class="flower-wrapper">
-          <!-- seed 种子 -->
+          <!-- seed 种子：俯视小褐色圆点 -->
           <div v-if="f?.stage === 'seed'" class="flower-seed"></div>
           
-          <!-- sprout 幼苗 -->
+          <!-- sprout 幼苗：俯视一圈嫩绿小芽 -->
           <div v-else-if="f?.stage === 'sprout'" class="flower-sprout">
             <div class="sprout-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg)` }"></div>
           </div>
           
-          <!-- seedling 中苗 -->
+          <!-- seedling 中苗：俯视绿色叶簇莲座 -->
           <div v-else-if="f?.stage === 'seedling'" class="flower-seedling">
             <div class="seedling-leaf" v-for="i in 8" :key="i" :style="{ transform: `rotate(${i * 45}deg) translateY(-12px)` }"></div>
             <div class="seedling-center"></div>
           </div>
           
-          <!-- bud 花苞 -->
+          <!-- bud 花苞：俯视叶簇中央显现花苞 -->
           <div v-else-if="f?.stage === 'bud'" class="flower-bud">
             <div class="bud-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg) translateY(-16px)` }"></div>
             <div class="bud-body"></div>
           </div>
           
-          <!-- bloom 开放：完整俯视玫瑰植株 -->
+          <!-- bloom 开放：俯视完整玫瑰植株 -->
           <div v-else class="flower-bloom">
             <!-- 外层叶片环（6片深绿椭圆叶片） -->
             <div class="leaf-ring">
-              <div class="outer-leaf" v-for="i in 6" :key="'leaf-' + i" :style="{ transform: `rotate(${i * 60}deg)` }"></div>
+              <div class="outer-leaf" v-for="i in 6" :key="'leaf-' + i" :style="{ transform: `rotate(${i * 60}deg) translateY(-26px)` }"></div>
             </div>
-            <!-- 花萼层（较短叶片，深绿偏褐） -->
+            <!-- 花萼层（5片较短叶片，深绿偏褐） -->
             <div class="sepal-ring">
-              <div class="sepal" v-for="i in 5" :key="'sepal-' + i" :style="{ transform: `rotate(${i * 72}deg)` }"></div>
+              <div class="sepal" v-for="i in 5" :key="'sepal-' + i" :style="{ transform: `rotate(${i * 72}deg) translateY(-18px)` }"></div>
             </div>
-            <!-- 花头：多层立体花瓣 -->
+            <!-- 花头：俯视多层立体花瓣 -->
             <div class="flower-head">
               <!-- 外层花瓣（宽大外翻，深红） -->
-              <div class="petal outer" v-for="i in 8" :key="'outer-' + i" :style="{ transform: `rotate(${i * 45}deg) translateY(-14px)` }"></div>
+              <div class="petal outer" v-for="i in 8" :key="'outer-' + i" :style="{ transform: `rotate(${i * 45}deg)` }"></div>
               <!-- 中层花瓣（收拢，红色） -->
-              <div class="petal middle" v-for="i in 6" :key="'middle-' + i" :style="{ transform: `rotate(${i * 60 + 30}deg) translateY(-9px)` }"></div>
+              <div class="petal middle" v-for="i in 6" :key="'middle-' + i" :style="{ transform: `rotate(${i * 60 + 30}deg)` }"></div>
               <!-- 内层花瓣（包裹花心，粉红） -->
-              <div class="petal inner" v-for="i in 5" :key="'inner-' + i" :style="{ transform: `rotate(${i * 72 + 15}deg) translateY(-5px)` }"></div>
+              <div class="petal inner" v-for="i in 5" :key="'inner-' + i" :style="{ transform: `rotate(${i * 72 + 15}deg)` }"></div>
               <!-- 花心 -->
               <div class="flower-center"></div>
             </div>
@@ -640,7 +640,7 @@ onMounted(() => {
 
 /* ============ 各阶段立体花朵 ============ */
 
-/* seed 种子：泥土中褐色圆点 */
+/* seed 种子：俯视小褐色圆点 */
 .flower-seed {
   position: absolute;
   top: 50%;
@@ -656,7 +656,7 @@ onMounted(() => {
     0 2px 4px rgba(0,0,0,0.5);
 }
 
-/* sprout 幼苗：一圈嫩绿小芽 */
+/* sprout 幼苗：俯视一圈嫩绿小芽 */
 .flower-sprout {
   position: absolute;
   top: 50%;
@@ -674,14 +674,10 @@ onMounted(() => {
   box-shadow:
     inset 1px 0 2px rgba(255,255,255,0.3),
     -1px 2px 3px rgba(0,0,0,0.3);
-  animation: sproutGrow 0.5s ease-out forwards;
-}
-@keyframes sproutGrow {
-  from { transform: rotate(0deg) scaleY(0); }
-  to { transform: rotate(var(--rotate, 0deg)) scaleY(1); }
+  transform-origin: center bottom;
 }
 
-/* seedling 中苗：绿色叶簇莲座 */
+/* seedling 中苗：俯视绿色叶簇莲座 */
 .flower-seedling {
   position: absolute;
   top: 50%;
@@ -700,6 +696,7 @@ onMounted(() => {
     inset 2px 0 4px rgba(255,255,255,0.25),
     inset -1px 0 2px rgba(0,0,0,0.2),
     -1px 3px 5px rgba(0,0,0,0.3);
+  transform-origin: center bottom;
 }
 .seedling-center {
   position: absolute;
@@ -714,7 +711,7 @@ onMounted(() => {
     0 2px 4px rgba(0,0,0,0.4);
 }
 
-/* bud 花苞：叶簇中央显现花苞 */
+/* bud 花苞：俯视叶簇中央显现花苞 */
 .flower-bud {
   position: absolute;
   top: 50%;
@@ -732,6 +729,7 @@ onMounted(() => {
   box-shadow:
     inset 2px 0 3px rgba(255,255,255,0.2),
     -1px 3px 4px rgba(0,0,0,0.3);
+  transform-origin: center bottom;
 }
 .bud-body {
   position: absolute;
@@ -750,7 +748,7 @@ onMounted(() => {
     -3px 4px 8px rgba(0,0,0,0.4);
 }
 
-/* bloom 开放：完整俯视玫瑰植株 */
+/* bloom 开放：俯视完整玫瑰植株 */
 .flower-bloom {
   position: absolute;
   top: 50%;
@@ -790,12 +788,6 @@ onMounted(() => {
     -1px 3px 5px rgba(0,0,0,0.35);
   transform-origin: center bottom;
 }
-.outer-leaf:nth-child(1) { transform: rotate(0deg) translateY(-26px); }
-.outer-leaf:nth-child(2) { transform: rotate(60deg) translateY(-26px); }
-.outer-leaf:nth-child(3) { transform: rotate(120deg) translateY(-26px); }
-.outer-leaf:nth-child(4) { transform: rotate(180deg) translateY(-26px); }
-.outer-leaf:nth-child(5) { transform: rotate(240deg) translateY(-26px); }
-.outer-leaf:nth-child(6) { transform: rotate(300deg) translateY(-26px); }
 
 /* ============ 花萼层 ============ */
 .sepal-ring {
@@ -820,13 +812,8 @@ onMounted(() => {
     -1px 2px 3px rgba(0,0,0,0.3);
   transform-origin: center bottom;
 }
-.sepal:nth-child(1) { transform: rotate(0deg) translateY(-18px); }
-.sepal:nth-child(2) { transform: rotate(72deg) translateY(-18px); }
-.sepal:nth-child(3) { transform: rotate(144deg) translateY(-18px); }
-.sepal:nth-child(4) { transform: rotate(216deg) translateY(-18px); }
-.sepal:nth-child(5) { transform: rotate(288deg) translateY(-18px); }
 
-/* ============ 花头：多层立体花瓣 ============ */
+/* ============ 花头：俯视多层立体花瓣 ============ */
 .flower-head {
   position: absolute;
   top: 50%;
@@ -860,14 +847,6 @@ onMounted(() => {
     inset -1px 0 3px rgba(0,0,0,0.25),
     -2px 2px 5px rgba(0,0,0,0.3);
 }
-.petal.outer:nth-child(1) { transform: rotate(0deg); }
-.petal.outer:nth-child(2) { transform: rotate(45deg); }
-.petal.outer:nth-child(3) { transform: rotate(90deg); }
-.petal.outer:nth-child(4) { transform: rotate(135deg); }
-.petal.outer:nth-child(5) { transform: rotate(180deg); }
-.petal.outer:nth-child(6) { transform: rotate(225deg); }
-.petal.outer:nth-child(7) { transform: rotate(270deg); }
-.petal.outer:nth-child(8) { transform: rotate(315deg); }
 
 /* 中层花瓣：收拢，红色 */
 .petal.middle {
@@ -885,12 +864,6 @@ onMounted(() => {
     inset -1px 0 2px rgba(0,0,0,0.2),
     -1px 2px 4px rgba(0,0,0,0.25);
 }
-.petal.middle:nth-child(9) { transform: rotate(30deg); }
-.petal.middle:nth-child(10) { transform: rotate(90deg); }
-.petal.middle:nth-child(11) { transform: rotate(150deg); }
-.petal.middle:nth-child(12) { transform: rotate(210deg); }
-.petal.middle:nth-child(13) { transform: rotate(270deg); }
-.petal.middle:nth-child(14) { transform: rotate(330deg); }
 
 /* 内层花瓣：包裹花心，粉红 */
 .petal.inner {
@@ -908,11 +881,6 @@ onMounted(() => {
     inset -1px 0 2px rgba(0,0,0,0.15),
     -1px 1px 3px rgba(0,0,0,0.2);
 }
-.petal.inner:nth-child(15) { transform: rotate(15deg); }
-.petal.inner:nth-child(16) { transform: rotate(87deg); }
-.petal.inner:nth-child(17) { transform: rotate(159deg); }
-.petal.inner:nth-child(18) { transform: rotate(231deg); }
-.petal.inner:nth-child(19) { transform: rotate(303deg); }
 
 /* 花心 */
 .flower-center {
