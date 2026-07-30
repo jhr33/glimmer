@@ -17,11 +17,12 @@ public interface FeedbackService {
     /**
      * 提交申诉
      *
-     * @param userId   用户ID
-     * @param reportId 举报ID
-     * @param content  申诉内容
+     * @param userId        用户ID
+     * @param reportId      举报ID
+     * @param punishmentId  处罚单ID（用于精准撤销处罚）
+     * @param content       申诉内容
      */
-    void createAppeal(Long userId, Long reportId, String content);
+    void createAppeal(Long userId, Long reportId, Long punishmentId, String content);
 
     /**
      * 我的意见信列表（按 created_at 倒序）
@@ -72,4 +73,20 @@ public interface FeedbackService {
      * @param newPenaltyType 新的处罚类型（申诉成功时使用，null表示解除处罚）
      */
     void reviewAppeal(Long adminId, Long feedbackId, String result, String reply, String newPenaltyType);
+
+    /**
+     * 检查罚单是否有未处理的申诉
+     *
+     * @param punishmentId 处罚单ID
+     * @return 是否存在待处理申诉
+     */
+    boolean hasPendingAppeal(Long punishmentId);
+
+    /**
+     * 检查申诉资格（包含待处理申诉检查和处罚状态检查）
+     *
+     * @param punishmentId 处罚单ID
+     * @return 申诉检查结果
+     */
+    com.glimmer.service.dto.AppealCheckResult checkAppealEligibility(Long punishmentId);
 }

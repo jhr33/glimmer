@@ -126,7 +126,7 @@ const router = createRouter({
 })
 
 // 全局前置守卫
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const userStore = useUserStore()
   const isLoggedIn = userStore.isLoggedIn
 
@@ -150,6 +150,13 @@ router.beforeEach((to, from, next) => {
   if (!isLoggedIn) {
     next({ name: 'login', query: { redirect: to.fullPath } })
     return
+  }
+
+  // 刷新用户信息（确保封禁/解禁状态实时同步）
+  try {
+    await userStore.fetchUserInfo()
+  } catch (e) {
+    // 刷新失败时不阻止导航
   }
 
   // 管理员路由：非 admin 角色访问 /admin/** 时跳转首页并提示

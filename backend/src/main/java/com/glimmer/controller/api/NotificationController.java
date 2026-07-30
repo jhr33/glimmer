@@ -36,9 +36,10 @@ public class NotificationController {
     @GetMapping
     public Result<PageResult<NotificationVO>> getNotifications(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String type) {
         Long userId = SecurityUtils.getCurrentUserId();
-        PageResult<NotificationVO> result = notificationService.getNotifications(userId, page, size);
+        PageResult<NotificationVO> result = notificationService.getNotifications(userId, page, size, type);
         return Result.success(result);
     }
 
@@ -46,10 +47,8 @@ public class NotificationController {
     @GetMapping("/unread-count")
     public Result<Map<String, Long>> getUnreadCount() {
         Long userId = SecurityUtils.getCurrentUserId();
-        long count = notificationService.getUnreadCount(userId);
-        Map<String, Long> data = new HashMap<>();
-        data.put("unreadCount", count);
-        return Result.success(data);
+        Map<String, Long> count = notificationService.getUnreadCountByType(userId);
+        return Result.success(count);
     }
 
     @Operation(summary = "标记单条已读")

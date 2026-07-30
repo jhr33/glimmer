@@ -8,11 +8,13 @@ import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
 import com.glimmer.entity.Flower;
 import com.glimmer.entity.FlowerType;
+import com.glimmer.entity.Punishment;
 import com.glimmer.entity.User;
 import com.glimmer.mapper.FlowerMapper;
 import com.glimmer.mapper.FlowerTypeMapper;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.NotificationService;
+import com.glimmer.service.PunishmentService;
 import com.glimmer.service.UserService;
 import com.glimmer.service.dto.FlowerVO;
 import com.glimmer.service.dto.GardenVO;
@@ -44,13 +46,15 @@ public class UserServiceImpl implements UserService {
     private final FlowerMapper flowerMapper;
     private final FlowerTypeMapper flowerTypeMapper;
     private final NotificationService notificationService;
+    private final PunishmentService punishmentService;
 
     public UserServiceImpl(UserMapper userMapper, FlowerMapper flowerMapper, FlowerTypeMapper flowerTypeMapper,
-                           NotificationService notificationService) {
+                           NotificationService notificationService, PunishmentService punishmentService) {
         this.userMapper = userMapper;
         this.flowerMapper = flowerMapper;
         this.flowerTypeMapper = flowerTypeMapper;
         this.notificationService = notificationService;
+        this.punishmentService = punishmentService;
     }
 
     @Override
@@ -133,9 +137,15 @@ public class UserServiceImpl implements UserService {
     @Override
     public void checkUserNotMuted(Long userId) {
         User user = getUserOrThrow(userId);
-        // 只检查status字段：banned=禁止发言，其他状态都允许发言
         if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
+            // 检查是否还有生效的处罚（WARNING除外）
+            if (punishmentService.isUserBanned(userId)) {
+                throw new BusinessException(ErrorCode.USER_BANNED);
+            }
+            // 处罚已全部结束，自动恢复为active
+            user.setStatus("active");
+            userMapper.updateById(user);
+            log.info("用户处罚已结束，自动恢复为active: userId={}", userId);
         }
     }
 
@@ -183,14 +193,24 @@ public class UserServiceImpl implements UserService {
             return;
         }
 
-        // 6. 更新状态（乐观锁 @Version）
-        user.setStatus(status);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "状态更新冲突，请重试");
+        // 6. 如果是封禁操作，创建BAN处罚单（会自动同步用户状态为banned）
+        if ("banned".equals(status)) {
+            punishmentService.createPunishment(userId, Punishment.TYPE_BAN,
+                    "管理员手动封禁", Punishment.SOURCE_ADMIN, null);
         }
 
-        // 7. 发送 system 通知
+        // 7. 如果是解禁操作，撤销该用户所有限制发言的生效罚单（BAN、MUTE_24H、MUTE_7D）
+        if ("active".equals(status)) {
+            List<Punishment> activePunishments = punishmentService.getActiveByUserId(userId);
+            for (Punishment p : activePunishments) {
+                if (!Punishment.TYPE_WARNING.equals(p.getType())) {
+                    punishmentService.revokePunishment(p.getId());
+                    log.info("解禁时撤销罚单: punishmentId={}, userId={}, type={}", p.getId(), userId, p.getType());
+                }
+            }
+        }
+
+        // 8. 发送 system 通知
         if ("banned".equals(status)) {
             notificationService.sendNotification(
                     userId, "system", "账号已被管理员封禁",
@@ -230,12 +250,30 @@ public class UserServiceImpl implements UserService {
         vo.setAnonymousName(user.getAnonymousName());
         vo.setRole(user.getRole());
         vo.setStatus(user.getStatus());
-        vo.setMuteType(user.getMuteType());
-        vo.setMuteEndTime(user.getMuteEndTime());
         vo.setTokenBalance(user.getTokenBalance());
         vo.setTotalFirefly(user.getTotalFirefly());
         vo.setFireflyBalance(user.getFireflyBalance());
         vo.setTotalSignDays(user.getTotalSignDays());
+        
+        // 从punishment表获取当前生效的处罚信息
+        Punishment currentPunishment = punishmentService.getLatestActiveByUserId(user.getId());
+        if (currentPunishment != null) {
+            vo.setMuteType(convertToLowerCaseType(currentPunishment.getType()));
+            vo.setMuteEndTime(currentPunishment.getEndAt());
+        } else {
+            vo.setMuteType(null);
+            vo.setMuteEndTime(null);
+        }
         return vo;
+    }
+    
+    private String convertToLowerCaseType(String punishmentType) {
+        switch (punishmentType) {
+            case Punishment.TYPE_WARNING: return "warning";
+            case Punishment.TYPE_MUTE_24H: return "mute_24h";
+            case Punishment.TYPE_MUTE_7D: return "mute_7d";
+            case Punishment.TYPE_BAN: return "ban";
+            default: return punishmentType != null ? punishmentType.toLowerCase() : null;
+        }
     }
 }

@@ -12,6 +12,7 @@ import com.glimmer.entity.User;
 import com.glimmer.mapper.SignInRecordMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
+import com.glimmer.service.PunishmentService;
 import com.glimmer.service.TokenService;
 import com.glimmer.service.dto.SignInResponse;
 import com.glimmer.service.dto.SignInStatusResponse;
@@ -44,12 +45,15 @@ public class TokenServiceImpl implements TokenService {
     private final UserMapper userMapper;
     private final SignInRecordMapper signInRecordMapper;
     private final TokenTransactionMapper tokenTransactionMapper;
+    private final PunishmentService punishmentService;
 
     public TokenServiceImpl(UserMapper userMapper, SignInRecordMapper signInRecordMapper,
-                            TokenTransactionMapper tokenTransactionMapper) {
+                            TokenTransactionMapper tokenTransactionMapper,
+                            PunishmentService punishmentService) {
         this.userMapper = userMapper;
         this.signInRecordMapper = signInRecordMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
+        this.punishmentService = punishmentService;
     }
 
     @Override
@@ -61,7 +65,14 @@ public class TokenServiceImpl implements TokenService {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
         if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
+            boolean hasActivePunishment = punishmentService.isUserBanned(userId);
+            if (hasActivePunishment) {
+                throw new BusinessException(ErrorCode.USER_BANNED);
+            }
+            // 处罚已全部结束，自动恢复为active
+            user.setStatus("active");
+            userMapper.updateById(user);
+            log.info("用户签到时发现处罚已结束，自动恢复为active: userId={}", userId);
         }
 
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));

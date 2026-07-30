@@ -13,7 +13,7 @@ const route = useRoute()
 
 const menus = [
   { index: '/admin/reports', label: '举报管理', icon: Warning },
-  { index: '/admin/feedbacks', label: '意见信管理', icon: ChatDotRound },
+  { index: '/admin/feedbacks', label: '意见信与申诉', icon: ChatDotRound },
   { index: '/admin/announcements', label: '公告管理', icon: Bell },
   { index: '/admin/users', label: '用户管理', icon: User }
 ]

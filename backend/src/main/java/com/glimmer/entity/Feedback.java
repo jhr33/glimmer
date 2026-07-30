@@ -36,5 +36,8 @@ public class Feedback {
     /** 关联举报ID（申诉时必填） */
     private Long reportId;
 
+    /** 关联处罚单ID（申诉时使用，用于精准撤销） */
+    private Long punishmentId;
+
     private LocalDateTime createdAt;
 }

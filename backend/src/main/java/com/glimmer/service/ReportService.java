@@ -1,6 +1,7 @@
 package com.glimmer.service;
 
 import com.glimmer.common.response.PageResult;
+import com.glimmer.service.dto.ReportGroupVO;
 import com.glimmer.service.dto.ReportVO;
 
 /**
@@ -44,4 +45,26 @@ public interface ReportService {
      * @param penaltyType   处罚类型: null/warning/mute_24h/mute_7d/ban
      */
     void reviewReport(Long reviewerId, Long reportId, String result, String reviewComment, String penaltyType);
+
+    /**
+     * 聚合举报列表（管理员），按目标资源分组，可按状态筛选
+     */
+    PageResult<ReportGroupVO> getReportGroupList(String status, int page, int size);
+
+    /**
+     * 聚合举报详情（管理员），包含所有举报记录
+     */
+    ReportGroupVO getReportGroupDetail(String targetType, Long targetId);
+
+    /**
+     * 审核聚合举报（处理同一目标的所有举报）
+     *
+     * @param reviewerId    审核管理员ID
+     * @param targetType    目标类型
+     * @param targetId      目标ID
+     * @param result        审核结果: approved/rejected
+     * @param reviewComment 审核备注
+     * @param penaltyType   处罚类型: null/warning/mute_24h/mute_7d/ban
+     */
+    void reviewReportGroup(Long reviewerId, String targetType, Long targetId, String result, String reviewComment, String penaltyType);
 }

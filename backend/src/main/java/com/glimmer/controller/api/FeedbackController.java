@@ -4,6 +4,7 @@ import com.glimmer.common.response.PageResult;
 import com.glimmer.common.response.Result;
 import com.glimmer.common.util.SecurityUtils;
 import com.glimmer.service.FeedbackService;
+import com.glimmer.service.dto.AppealCheckResult;
 import com.glimmer.service.dto.CreateAppealRequest;
 import com.glimmer.service.dto.CreateFeedbackRequest;
 import com.glimmer.service.dto.FeedbackVO;
@@ -45,7 +46,7 @@ public class FeedbackController {
     @PostMapping("/appeal")
     public Result<Void> createAppeal(@Valid @RequestBody CreateAppealRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();
-        feedbackService.createAppeal(userId, request.getReportId(), request.getContent());
+        feedbackService.createAppeal(userId, request.getReportId(), request.getPunishmentId(), request.getContent());
         return Result.success();
     }
 
@@ -65,5 +66,12 @@ public class FeedbackController {
         Long userId = SecurityUtils.getCurrentUserId();
         FeedbackVO vo = feedbackService.getFeedbackDetail(userId, feedbackId);
         return Result.success(vo);
+    }
+
+    @Operation(summary = "检查申诉资格")
+    @GetMapping("/check-appeal-eligibility")
+    public Result<AppealCheckResult> checkAppealEligibility(@RequestParam Long punishmentId) {
+        AppealCheckResult result = feedbackService.checkAppealEligibility(punishmentId);
+        return Result.success(result);
     }
 }

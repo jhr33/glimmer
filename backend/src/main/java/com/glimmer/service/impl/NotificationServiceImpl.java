@@ -15,7 +15,9 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -34,10 +36,20 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     public PageResult<NotificationVO> getNotifications(Long userId, int page, int size) {
+        return getNotifications(userId, page, size, null);
+    }
+
+    @Override
+    public PageResult<NotificationVO> getNotifications(Long userId, int page, int size, String type) {
         Page<Notification> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<Notification> wrapper = new LambdaQueryWrapper<Notification>()
-                .eq(Notification::getUserId, userId)
-                .orderByDesc(Notification::getCreatedAt);
+                .eq(Notification::getUserId, userId);
+        
+        if (type != null && !type.isEmpty()) {
+            wrapper.eq(Notification::getType, type);
+        }
+        
+        wrapper.orderByDesc(Notification::getCreatedAt);
 
         IPage<Notification> result = notificationMapper.selectPage(pageParam, wrapper);
         List<NotificationVO> list = result.getRecords().stream()
@@ -52,6 +64,25 @@ public class NotificationServiceImpl implements NotificationService {
                 .eq(Notification::getUserId, userId)
                 .eq(Notification::getIsRead, 0));
         return count != null ? count : 0L;
+    }
+
+    @Override
+    public Map<String, Long> getUnreadCountByType(Long userId) {
+        List<Notification> unreadList = notificationMapper.selectList(new LambdaQueryWrapper<Notification>()
+                .eq(Notification::getUserId, userId)
+                .eq(Notification::getIsRead, 0));
+        
+        Map<String, Long> countByType = new HashMap<>();
+        long total = 0;
+        
+        for (Notification n : unreadList) {
+            String type = n.getType();
+            countByType.merge(type, 1L, Long::sum);
+            total++;
+        }
+        
+        countByType.put("total", total);
+        return countByType;
     }
 
     @Override

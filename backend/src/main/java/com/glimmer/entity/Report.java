@@ -40,8 +40,8 @@ public class Report {
 
     private LocalDateTime reviewedAt;
 
-    /** 处罚类型: null/空(无处罚)/warning(警告)/mute_24h(禁言24小时)/mute_7d(禁言7天)/ban(永久封禁) */
-    private String penaltyType;
+    /** 关联处罚单ID（审核通过后创建处罚单时回填） */
+    private Long punishmentId;
 
     /** 申诉次数 */
     private Integer appealCount;

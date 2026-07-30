@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ArrowDown, Bell } from '@element-plus/icons-vue'
 import { useUserStore } from '@/stores/user'
@@ -9,6 +9,8 @@ const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 const notificationStore = useNotificationStore()
+
+let pollInterval = null
 
 const isLoggedIn = computed(() => userStore.isLoggedIn)
 const isAdmin = computed(() => userStore.isAdmin)
@@ -24,6 +26,7 @@ const menuItems = computed(() => {
     { index: '/ai', label: 'AI 对话' },
     { index: '/garden', label: '花园' },
     { index: '/announcements', label: '公告' },
+    { index: '/notifications', label: '通知', isNotification: true },
     { index: '/feedback', label: '意见反馈' }
   ]
   if (isAdmin.value) {
@@ -37,10 +40,6 @@ const isCampfire = computed(() => route.path === '/campfire')
 
 function handleSelect(index) {
   router.push(index)
-}
-
-function goNotifications() {
-  router.push('/notifications')
 }
 
 function goLogin() {
@@ -57,19 +56,38 @@ function handleLogout() {
   router.push('/login')
 }
 
+function startPolling() {
+  if (pollInterval) return
+  pollInterval = setInterval(() => {
+    if (isLoggedIn.value) {
+      notificationStore.fetchUnreadCount()
+    }
+  }, 10000)
+}
+
+function stopPolling() {
+  if (pollInterval) {
+    clearInterval(pollInterval)
+    pollInterval = null
+  }
+}
+
 onMounted(async () => {
   if (isLoggedIn.value) {
     // 拉取未读通知数
     notificationStore.fetchUnreadCount()
-    // 若用户信息缺失，尝试拉取
-    if (!userStore.userInfo) {
-      try {
-        await userStore.fetchUserInfo()
-      } catch (e) {
-        // 拉取失败时静默处理
-      }
+    // 每次刷新都重新拉取用户信息，确保代币、萤火数等数据与数据库同步
+    try {
+      await userStore.fetchUserInfo()
+    } catch (e) {
+      // 拉取失败时静默处理（可能token过期）
     }
   }
+  startPolling()
+})
+
+onUnmounted(() => {
+  stopPolling()
 })
 </script>
 
@@ -97,21 +115,17 @@ onMounted(async () => {
               :key="item.index"
               :index="item.index"
             >
-              {{ item.label }}
+              <el-badge v-if="item.isNotification" :value="unreadCount" :hidden="unreadCount === 0" :max="99">
+                <el-icon><Bell /></el-icon>
+                <span>{{ item.label }}</span>
+              </el-badge>
+              <template v-else>
+                {{ item.label }}
+              </template>
             </el-menu-item>
           </el-menu>
 
           <div class="header-actions">
-            <el-badge
-              :value="unreadCount"
-              :hidden="unreadCount === 0"
-              :max="99"
-              class="notification-badge"
-            >
-              <el-button circle @click="goNotifications">
-                <el-icon><Bell /></el-icon>
-              </el-button>
-            </el-badge>
             <el-dropdown @command="(cmd) => cmd === 'logout' && handleLogout()">
               <span class="user-dropdown-trigger">
                 {{ userStore.userInfo?.nickname || userStore.userInfo?.username || '旅人' }}
@@ -193,8 +207,19 @@ onMounted(async () => {
   gap: 16px;
   flex-shrink: 0;
 }
-.notification-badge {
-  line-height: 1;
+.menu-badge {
+  display: inline-flex !important;
+  align-items: center;
+  gap: 4px;
+}
+.menu-badge :deep(.el-badge__content) {
+  margin-left: 4px;
+}
+/* 修复通知红点位置，避免被遮挡 */
+.nav-menu :deep(.el-badge__content) {
+  top: -4px !important;
+  right: -8px !important;
+  transform: none !important;
 }
 .user-dropdown-trigger {
   cursor: pointer;

@@ -1,7 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { adminGetReports, adminGetReport, adminReviewReport } from '@/api/report'
+import { adminGetReportGroups, adminGetReportGroupDetail, adminReviewReportGroup } from '@/api/report'
 
 const loading = ref(false)
 const list = ref([])
@@ -72,20 +72,13 @@ function resultType(r) {
   return 'info'
 }
 
+function formatDateTime(dt) {
+  if (!dt) return '-'
+  return new Date(dt).toLocaleString('zh-CN')
+}
+
 function reporterLabel(item) {
-  return item.reporterNickname || item.reporter_nickname || item.reporter?.nickname || item.reporter?.anonymousName || `用户#${item.reporterId ?? item.reporter_id ?? '-'}`
-}
-
-function targetUserLabel(item) {
-  return item.targetUserNickname || item.target_user_nickname || item.targetUser?.nickname || item.targetUser?.anonymousName || `用户#${item.targetUserId ?? item.target_user_id ?? '-'}`
-}
-
-function createdAt(item) {
-  return item.createdAt || item.created_at || '-'
-}
-
-function reviewedAt(item) {
-  return item.reviewedAt || item.reviewed_at || '-'
+  return item.reporterUsername || item.reporter_username || `用户#${item.reporterId ?? item.reporter_id ?? '-'}`
 }
 
 async function fetchList() {
@@ -95,7 +88,7 @@ async function fetchList() {
     if (statusFilter.value) {
       params.status = statusFilter.value
     }
-    const res = await adminGetReports(params)
+    const res = await adminGetReportGroups(params)
     const data = res.data
     list.value = pickList(data)
     total.value = pickTotal(data)
@@ -117,24 +110,21 @@ function handlePageChange(p) {
   fetchList()
 }
 
-async function openReview(item) {
+async function openDetail(item) {
   detail.value = null
   reviewForm.result = 'approved'
   reviewForm.reviewComment = ''
+  reviewForm.penaltyType = ''
   reviewVisible.value = true
   detailLoading.value = true
   try {
-    const res = await adminGetReport(item.id)
+    const res = await adminGetReportGroupDetail(item.targetType, item.targetId)
     detail.value = res.data
     // 若已有审核结果，预填
-    if (detail.value?.result) {
-      reviewForm.result = detail.value.result
-    }
-    if (detail.value?.reviewComment ?? detail.value?.review_comment) {
-      reviewForm.reviewComment = detail.value.reviewComment || detail.value.review_comment
+    if (detail.value?.groupResult) {
+      reviewForm.result = detail.value.groupResult
     }
   } catch (e) {
-    // 退化为列表项数据
     detail.value = item
   } finally {
     detailLoading.value = false
@@ -142,7 +132,7 @@ async function openReview(item) {
 }
 
 async function handleReviewSubmit() {
-  if (!detail.value?.id) return
+  if (!detail.value?.targetType || !detail.value?.targetId) return
   if (!reviewForm.result) {
     ElMessage.warning('请选择审核结果')
     return
@@ -150,7 +140,9 @@ async function handleReviewSubmit() {
 
   reviewLoading.value = true
   try {
-    await adminReviewReport(detail.value.id, {
+    await adminReviewReportGroup({
+      targetType: detail.value.targetType,
+      targetId: detail.value.targetId,
       result: reviewForm.result,
       penaltyType: reviewForm.penaltyType,
       reviewComment: reviewForm.reviewComment.trim()
@@ -192,55 +184,61 @@ onMounted(() => {
 
     <el-card v-loading="loading" shadow="never" class="table-card">
       <el-table :data="list" stripe style="width: 100%">
-        <el-table-column prop="id" label="举报ID" width="80" />
-        <el-table-column label="举报人" min-width="120">
-          <template #default="{ row }">{{ reporterLabel(row) }}</template>
-        </el-table-column>
         <el-table-column label="被举报人" min-width="120">
-          <template #default="{ row }">{{ targetUserLabel(row) }}</template>
+          <template #default="{ row }">{{ row.targetUsername || `用户#${row.targetUserId}` }}</template>
         </el-table-column>
-        <el-table-column label="目标类型" width="110">
-          <template #default="{ row }">{{ targetTypeLabel(row.targetType || row.target_type) }}</template>
+        <el-table-column label="举报内容" min-width="200" show-overflow-tooltip>
+          <template #default="{ row }">
+            <div>{{ row.reportedContent || '-' }}</div>
+            <div class="text-muted text-sm">【{{ targetTypeLabel(row.targetType) }}】{{ row.location || '-' }}</div>
+          </template>
         </el-table-column>
-        <el-table-column label="目标ID" width="90">
-          <template #default="{ row }">{{ row.targetId ?? row.target_id ?? '-' }}</template>
-        </el-table-column>
-        <el-table-column label="举报原因" min-width="180" show-overflow-tooltip>
-          <template #default="{ row }">{{ row.content || '-' }}</template>
+        <el-table-column label="举报人数" width="100">
+          <template #default="{ row }">
+            <el-tag size="small" type="danger">{{ row.reporterCount || 0 }}人</el-tag>
+          </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag size="small" :type="statusType(row.status)">{{ statusLabel(row.status) }}</el-tag>
+            <el-tag size="small" :type="statusType(row.groupStatus)">{{ statusLabel(row.groupStatus) }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="审核结果" width="110">
           <template #default="{ row }">
             <el-tag
-              v-if="row.status === 'reviewed'"
+              v-if="row.groupStatus === 'reviewed'"
               size="small"
-              :type="resultType(row.result)"
+              :type="resultType(row.groupResult)"
               effect="plain"
             >
-              {{ resultLabel(row.result) }}
+              {{ resultLabel(row.groupResult) }}
             </el-tag>
             <span v-else>-</span>
           </template>
         </el-table-column>
-        <el-table-column label="举报时间" min-width="160">
-          <template #default="{ row }">{{ createdAt(row) }}</template>
+        <el-table-column label="最近举报时间" min-width="160">
+          <template #default="{ row }">{{ formatDateTime(row.lastReportedAt) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="200" fixed="right">
           <template #default="{ row }">
             <el-button
-              v-if="row.status === 'pending'"
+              v-if="row.groupStatus === 'pending'"
               size="small"
               type="primary"
               link
-              @click="openReview(row)"
+              @click="openDetail(row)"
             >
               审核
             </el-button>
-            <span v-else class="text-muted">已处理</span>
+            <el-button
+              size="small"
+              type="success"
+              link
+              @click="openDetail(row)"
+            >
+              查看详情
+            </el-button>
+            <span v-if="row.groupStatus !== 'pending'" class="text-muted">已处理</span>
           </template>
         </el-table-column>
       </el-table>
@@ -261,42 +259,56 @@ onMounted(() => {
     <el-dialog
       v-model="reviewVisible"
       title="审核举报"
-      width="560px"
+      width="700px"
       destroy-on-close
     >
       <div v-loading="detailLoading">
         <template v-if="detail">
           <div class="detail-row">
-            <span class="detail-label">举报ID：</span>
-            <span>{{ detail.id }}</span>
+            <span class="detail-label">被举报人：</span>
+            <span>{{ detail.targetUsername || `用户#${detail.targetUserId}` }}</span>
           </div>
           <div class="detail-row">
             <span class="detail-label">目标类型：</span>
-            <span>{{ targetTypeLabel(detail.targetType || detail.target_type) }}</span>
+            <span>{{ targetTypeLabel(detail.targetType) }}</span>
           </div>
           <div class="detail-row">
-            <span class="detail-label">目标ID：</span>
-            <span>{{ detail.targetId ?? detail.target_id ?? '-' }}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">举报人：</span>
-            <span>{{ reporterLabel(detail) }}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">被举报人：</span>
-            <span>{{ targetUserLabel(detail) }}</span>
-          </div>
-          <div class="detail-block">
-            <div class="detail-label">举报原因：</div>
-            <div class="detail-content">{{ detail.content || '-' }}</div>
+            <span class="detail-label">发言场所：</span>
+            <span>{{ detail.location || '-' }}</span>
           </div>
           <div class="detail-block">
             <div class="detail-label">被举报内容：</div>
             <div class="detail-content">{{ detail.reportedContent || '-' }}</div>
           </div>
           <div class="detail-row">
-            <span class="detail-label">发言场所：</span>
-            <span>{{ detail.location || '-' }}</span>
+            <span class="detail-label">举报人数：</span>
+            <el-tag type="danger">{{ detail.reporterCount || 0 }}人</el-tag>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">最早举报时间：</span>
+            <span>{{ formatDateTime(detail.firstReportedAt) }}</span>
+          </div>
+          <div class="detail-row">
+            <span class="detail-label">最近举报时间：</span>
+            <span>{{ formatDateTime(detail.lastReportedAt) }}</span>
+          </div>
+
+          <!-- 所有举报人的举报理由 -->
+          <div v-if="detail.reports && detail.reports.length > 0" class="detail-block">
+            <div class="detail-label">举报详情（共 {{ detail.reports.length }} 条）：</div>
+            <div class="reports-list">
+              <div v-for="report in detail.reports" :key="report.id" class="report-item">
+                <div class="report-header">
+                  <span class="reporter-name">{{ reporterLabel(report) }}</span>
+                  <span class="report-time">{{ formatDateTime(report.createdAt) }}</span>
+                  <el-tag v-if="report.status === 'reviewed'" size="small" :type="report.result === 'approved' ? 'danger' : 'info'">
+                    {{ resultLabel(report.result) }}
+                  </el-tag>
+                  <span v-else class="pending-tag">待审核</span>
+                </div>
+                <div class="report-content">{{ report.content || '-' }}</div>
+              </div>
+            </div>
           </div>
         </template>
       </div>
@@ -379,6 +391,9 @@ onMounted(() => {
   color: #c0c4cc;
   font-size: 12px;
 }
+.text-sm {
+  font-size: 12px;
+}
 .pagination-wrap {
   margin-top: 16px;
   display: flex;
@@ -391,7 +406,7 @@ onMounted(() => {
   color: #606266;
 }
 .detail-label {
-  width: 90px;
+  width: 110px;
   color: #909399;
   flex-shrink: 0;
 }
@@ -411,5 +426,45 @@ onMounted(() => {
 }
 .review-form {
   margin-top: 4px;
+}
+.reports-list {
+  margin-top: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid #ebeef5;
+  border-radius: 6px;
+  padding: 8px;
+}
+.report-item {
+  padding: 10px;
+  background: #fafafa;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.report-item:last-child {
+  margin-bottom: 0;
+}
+.report-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+.reporter-name {
+  color: #303133;
+  font-weight: 500;
+}
+.report-time {
+  color: #909399;
+}
+.pending-tag {
+  font-size: 12px;
+  color: #e6a23c;
+}
+.report-content {
+  font-size: 13px;
+  color: #606266;
+  line-height: 1.5;
 }
 </style>

@@ -1,7 +1,6 @@
 package com.glimmer.service.dto;
 
 import jakarta.validation.constraints.NotBlank;
-import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 import lombok.Data;
 
@@ -13,6 +12,9 @@ public class CreateAppealRequest {
 
     /** 举报ID（从处罚通知进入时自动填写，也可手动填写） */
     private Long reportId;
+
+    /** 处罚单ID（从处罚通知进入时自动填写，用于精准撤销处罚） */
+    private Long punishmentId;
 
     @NotBlank(message = "申诉内容不能为空")
     @Size(max = 2000, message = "申诉内容最长2000个字符")

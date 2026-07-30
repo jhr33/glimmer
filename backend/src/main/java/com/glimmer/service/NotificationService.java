@@ -3,6 +3,8 @@ package com.glimmer.service;
 import com.glimmer.common.response.PageResult;
 import com.glimmer.service.dto.NotificationVO;
 
+import java.util.Map;
+
 /**
  * 通知服务
  * 见开发文档 §2.11
@@ -15,9 +17,19 @@ public interface NotificationService {
     PageResult<NotificationVO> getNotifications(Long userId, int page, int size);
 
     /**
+     * 分页查询通知列表（按 created_at 倒序，支持类型筛选）
+     */
+    PageResult<NotificationVO> getNotifications(Long userId, int page, int size, String type);
+
+    /**
      * 返回未读数量
      */
     long getUnreadCount(Long userId);
+
+    /**
+     * 返回按类型分组的未读数量
+     */
+    Map<String, Long> getUnreadCountByType(Long userId);
 
     /**
      * 标记单条已读（校验 user_id 匹配）

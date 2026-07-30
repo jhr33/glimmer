@@ -5,9 +5,11 @@ import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.util.AnonymousNameGenerator;
 import com.glimmer.common.util.JwtUtils;
+import com.glimmer.entity.Punishment;
 import com.glimmer.entity.User;
 import com.glimmer.mapper.UserMapper;
 import com.glimmer.service.AuthService;
+import com.glimmer.service.PunishmentService;
 import com.glimmer.service.dto.LoginRequest;
 import com.glimmer.service.dto.LoginResponse;
 import com.glimmer.service.dto.RegisterRequest;
@@ -27,11 +29,14 @@ public class AuthServiceImpl implements AuthService {
     private final UserMapper userMapper;
     private final PasswordEncoder passwordEncoder;
     private final JwtUtils jwtUtils;
+    private final PunishmentService punishmentService;
 
-    public AuthServiceImpl(UserMapper userMapper, PasswordEncoder passwordEncoder, JwtUtils jwtUtils) {
+    public AuthServiceImpl(UserMapper userMapper, PasswordEncoder passwordEncoder, JwtUtils jwtUtils,
+                           PunishmentService punishmentService) {
         this.userMapper = userMapper;
         this.passwordEncoder = passwordEncoder;
         this.jwtUtils = jwtUtils;
+        this.punishmentService = punishmentService;
     }
 
     @Override
@@ -78,7 +83,14 @@ public class AuthServiceImpl implements AuthService {
 
         // 3. 校验用户状态（见开发文档 §2.1.2）
         if ("banned".equals(user.getStatus())) {
-            throw new BusinessException(ErrorCode.USER_BANNED);
+            boolean hasActivePunishment = punishmentService.isUserBanned(user.getId());
+            if (hasActivePunishment) {
+                throw new BusinessException(ErrorCode.USER_BANNED);
+            }
+            // 处罚已全部结束，自动恢复为active
+            user.setStatus("active");
+            userMapper.updateById(user);
+            log.info("用户登录时发现处罚已结束，自动恢复为active: userId={}", user.getId());
         }
 
         // 4. 签发 JWT（24小时，HS256）
@@ -100,12 +112,30 @@ public class AuthServiceImpl implements AuthService {
         vo.setAnonymousName(user.getAnonymousName());
         vo.setRole(user.getRole());
         vo.setStatus(user.getStatus());
-        vo.setMuteType(user.getMuteType());
-        vo.setMuteEndTime(user.getMuteEndTime());
         vo.setTokenBalance(user.getTokenBalance());
         vo.setTotalFirefly(user.getTotalFirefly());
         vo.setFireflyBalance(user.getFireflyBalance());
         vo.setTotalSignDays(user.getTotalSignDays());
+        
+        // 从punishment表获取当前生效的处罚信息
+        Punishment currentPunishment = punishmentService.getLatestActiveByUserId(user.getId());
+        if (currentPunishment != null) {
+            vo.setMuteType(convertToLowerCaseType(currentPunishment.getType()));
+            vo.setMuteEndTime(currentPunishment.getEndAt());
+        } else {
+            vo.setMuteType(null);
+            vo.setMuteEndTime(null);
+        }
         return vo;
+    }
+    
+    private String convertToLowerCaseType(String punishmentType) {
+        switch (punishmentType) {
+            case Punishment.TYPE_WARNING: return "warning";
+            case Punishment.TYPE_MUTE_24H: return "mute_24h";
+            case Punishment.TYPE_MUTE_7D: return "mute_7d";
+            case Punishment.TYPE_BAN: return "ban";
+            default: return punishmentType != null ? punishmentType.toLowerCase() : null;
+        }
     }
 }

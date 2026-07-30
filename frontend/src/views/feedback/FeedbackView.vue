@@ -9,6 +9,7 @@ const activeTab = ref('feedback');
 const feedbackContent = ref('');
 const appealContent = ref('');
 const appealReportId = ref('');
+const appealPunishmentId = ref('');
 const submitting = ref(false);
 const appealSubmitting = ref(false);
 const lastSubmitAt = ref(0);
@@ -132,12 +133,15 @@ async function handleAppealSubmit() {
  if (appealReportId.value) {
  data.reportId = appealReportId.value;
  }
+ if (appealPunishmentId.value) {
+ data.punishmentId = appealPunishmentId.value;
+ }
  await createAppeal(data);
  ElMessage.success('申诉已提交');
- appealContent.value = '';
- appealReportId.value = '';
- page.current = 1;
- await fetchList();
+ // 申诉提交后自动返回上一页
+ setTimeout(() => {
+ window.history.back();
+ }, 1500);
  }
  catch (e) {
  if (e?.code === 409) {
@@ -155,8 +159,14 @@ watch(() => userStore.userInfo?.status, () => {
 
 onMounted(() => {
  const reportId = route.query.reportId;
+ const punishmentId = route.query.punishmentId;
  if (reportId) {
  appealReportId.value = reportId;
+ }
+ if (punishmentId) {
+ appealPunishmentId.value = punishmentId;
+ }
+ if (reportId || punishmentId) {
  activeTab.value = 'appeal';
  }
  // 初始化封禁状态
@@ -211,8 +221,11 @@ onMounted(() => {
     <!-- 提交申诉区 -->
     <el-card v-if="activeTab === 'appeal'" shadow="never" class="submit-card">
       <h3 class="section-title">提交申诉</h3>
-      <div v-if="appealReportId" class="appeal-hint">
-        <el-tag type="info" effect="plain">正在为举报 #{{ appealReportId }} 提交申诉</el-tag>
+      <div v-if="appealPunishmentId || appealReportId" class="appeal-hint">
+        <el-tag type="info" effect="plain">
+          <template v-if="appealPunishmentId">正在为处罚单 #{{ appealPunishmentId }} 提交申诉</template>
+          <template v-else>正在为举报 #{{ appealReportId }} 提交申诉</template>
+        </el-tag>
       </div>
       <el-input
         v-model="appealContent"

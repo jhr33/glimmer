@@ -20,6 +20,11 @@ export function getFeedback(feedbackId) {
   return request({ url: `/feedbacks/${feedbackId}`, method: 'get' })
 }
 
+// 检查申诉资格（包含待处理申诉和处罚状态检查）
+export function checkAppealEligibility(punishmentId) {
+  return request({ url: '/feedbacks/check-appeal-eligibility', method: 'get', params: { punishmentId } })
+}
+
 // === 管理员接口（4.15 节） ===
 
 // 意见信列表（分页，可按状态筛选）

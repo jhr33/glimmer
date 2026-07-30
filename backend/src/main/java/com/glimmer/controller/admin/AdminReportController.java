@@ -3,8 +3,11 @@ package com.glimmer.controller.admin;
 import com.glimmer.common.response.PageResult;
 import com.glimmer.common.response.Result;
 import com.glimmer.common.util.SecurityUtils;
+import com.glimmer.service.PunishmentService;
 import com.glimmer.service.ReportService;
+import com.glimmer.service.dto.ReportGroupVO;
 import com.glimmer.service.dto.ReportVO;
+import com.glimmer.service.dto.ReviewReportGroupRequest;
 import com.glimmer.service.dto.ReviewReportRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -21,15 +24,17 @@ import org.springframework.web.bind.annotation.RestController;
  * 管理员举报接口（需 admin 角色）
  * 见开发文档 §4.15
  */
-@Tag(name = "管理员-举报接口", description = "举报列表、详情、审核")
+@Tag(name = "管理员-举报接口", description = "举报列表、详情、审核、处罚管理")
 @RestController
 @RequestMapping("/api/admin/reports")
 public class AdminReportController {
 
     private final ReportService reportService;
+    private final PunishmentService punishmentService;
 
-    public AdminReportController(ReportService reportService) {
+    public AdminReportController(ReportService reportService, PunishmentService punishmentService) {
         this.reportService = reportService;
+        this.punishmentService = punishmentService;
     }
 
     @Operation(summary = "举报列表（分页，可按状态筛选）")
@@ -55,6 +60,42 @@ public class AdminReportController {
                                      @Valid @RequestBody ReviewReportRequest request) {
         Long reviewerId = SecurityUtils.getCurrentUserId();
         reportService.reviewReport(reviewerId, id, request.getResult(), request.getReviewComment(), request.getPenaltyType());
+        return Result.success();
+    }
+
+    @Operation(summary = "聚合举报列表（按目标资源分组）")
+    @GetMapping("/groups")
+    public Result<PageResult<ReportGroupVO>> getReportGroupList(
+            @RequestParam(required = false) String status,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "10") int size) {
+        PageResult<ReportGroupVO> result = reportService.getReportGroupList(status, page, size);
+        return Result.success(result);
+    }
+
+    @Operation(summary = "聚合举报详情（包含所有举报记录）")
+    @GetMapping("/groups/detail")
+    public Result<ReportGroupVO> getReportGroupDetail(
+            @RequestParam String targetType,
+            @RequestParam Long targetId) {
+        ReportGroupVO vo = reportService.getReportGroupDetail(targetType, targetId);
+        return Result.success(vo);
+    }
+
+    @Operation(summary = "审核聚合举报（处理同一目标的所有举报）")
+    @PostMapping("/groups/review")
+    public Result<Void> reviewReportGroup(@Valid @RequestBody ReviewReportGroupRequest request) {
+        Long reviewerId = SecurityUtils.getCurrentUserId();
+        reportService.reviewReportGroup(reviewerId, request.getTargetType(), request.getTargetId(), 
+                request.getResult(), request.getReviewComment(), request.getPenaltyType());
+        return Result.success();
+    }
+
+    @Operation(summary = "撤销处罚单（管理员操作）")
+    @PostMapping("/punishments/{id}/revoke")
+    public Result<Void> revokePunishment(@PathVariable Long id) {
+        Long adminId = SecurityUtils.getCurrentUserId();
+        punishmentService.revokePunishment(id);
         return Result.success();
     }
 }

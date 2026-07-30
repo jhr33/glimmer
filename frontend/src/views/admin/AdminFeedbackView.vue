@@ -404,9 +404,33 @@ onMounted(() => {
               <span class="detail-label">发言场所：</span>
               <span>{{ appealDetail.report.location || '-' }}</span>
             </div>
+          </template>
+          <template v-if="appealDetail.punishment">
+            <el-divider />
             <div class="detail-row">
-              <span class="detail-label">原处罚：</span>
-              <span>{{ penaltyTypeLabel(appealDetail.report.penaltyType) }}</span>
+              <span class="detail-label">处罚类型：</span>
+              <span>{{ appealDetail.punishment.typeDescription || penaltyTypeLabel(appealDetail.punishment.type) }}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">处罚状态：</span>
+              <el-tag 
+                :type="appealDetail.punishment.status === 'ACTIVE' ? 'warning' : appealDetail.punishment.status === 'REVOKED' ? 'info' : 'success'"
+                size="small"
+              >
+                {{ appealDetail.punishment.statusDescription || appealDetail.punishment.status }}
+              </el-tag>
+            </div>
+            <div class="detail-row" v-if="appealDetail.punishment.reason">
+              <span class="detail-label">处罚原因：</span>
+              <span>{{ appealDetail.punishment.reason }}</span>
+            </div>
+            <div class="detail-row" v-if="appealDetail.punishment.startAt">
+              <span class="detail-label">开始时间：</span>
+              <span>{{ appealDetail.punishment.startAt }}</span>
+            </div>
+            <div class="detail-row" v-if="appealDetail.punishment.endAt">
+              <span class="detail-label">结束时间：</span>
+              <span>{{ appealDetail.punishment.endAt }}</span>
             </div>
           </template>
         </template>
