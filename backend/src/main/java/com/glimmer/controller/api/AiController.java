@@ -8,13 +8,13 @@ import com.glimmer.service.dto.AiConversationVO;
 import com.glimmer.service.dto.ConversationDetailVO;
 import com.glimmer.service.dto.SendMessageRequest;
 import com.glimmer.service.dto.SendMessageResponse;
-import com.glimmer.service.dto.StreamMessageDTO;
+import com.glimmer.service.dto.UnlockQuotaResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.PreDestroy;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -23,6 +23,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * AI 对话接口
@@ -37,9 +41,39 @@ public class AiController {
     private final AiConversationService aiConversationService;
     private final ObjectMapper objectMapper;
 
+    /**
+     * AI 流式请求专用线程池。
+     * <p>
+     * 替代原来的 new Thread()：
+     * - 限制最大并发流式请求数，避免线程无限增长
+     * - 线程可复用，减少创建开销
+     * - 应用关闭时可优雅停机
+     */
+    private final ExecutorService aiStreamExecutor = Executors.newFixedThreadPool(
+            4,
+            r -> {
+                Thread t = new Thread(r, "ai-stream-worker");
+                t.setDaemon(true);
+                return t;
+            }
+    );
+
     public AiController(AiConversationService aiConversationService, ObjectMapper objectMapper) {
         this.aiConversationService = aiConversationService;
         this.objectMapper = objectMapper;
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        aiStreamExecutor.shutdown();
+        try {
+            if (!aiStreamExecutor.awaitTermination(5, TimeUnit.SECONDS)) {
+                aiStreamExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            aiStreamExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
     @Operation(summary = "开启新会话（消耗1代币）")
@@ -82,19 +116,32 @@ public class AiController {
     public SseEmitter sendMessageStream(@PathVariable Long conversationId,
                                         @Valid @RequestBody SendMessageRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();
-        
-        // 设置超时时间为5分钟（流式响应需要较长时间）
-        SseEmitter emitter = new SseEmitter(5 * 60 * 1000L);
-        
-        // 在独立线程中异步执行流式发送，避免阻塞请求线程
-        new Thread(() -> {
-            aiConversationService.sendMessageStream(userId, conversationId, request.getContent(), emitter, objectMapper);
-        }, "ai-stream-" + conversationId).start();
-        
-        // 客户端断开连接时的处理
-        emitter.onCompletion(() -> log.info("SSE 连接已关闭"));
-        emitter.onTimeout(() -> log.warn("SSE 连接超时"));
-        
+
+        // 超时 2 分钟（原 5 分钟过长，DeepSeek readTimeout 已设为 120s）
+        // 超时后必须 complete() 释放浏览器连接，否则连接池耗尽
+        SseEmitter emitter = new SseEmitter(2 * 60 * 1000L);
+
+        // 使用线程池替代 new Thread()，限制并发并支持复用
+        aiStreamExecutor.submit(() -> {
+            try {
+                aiConversationService.sendMessageStream(userId, conversationId, request.getContent(), emitter, objectMapper);
+            } catch (Exception e) {
+                log.error("AI 流式处理异常: conversationId={}", conversationId, e);
+                emitter.completeWithError(e);
+            }
+        });
+
+        // 客户端断开 / 超时 / 出错时，必须 complete() 以释放浏览器连接
+        emitter.onCompletion(() -> log.info("SSE 连接已关闭: conversationId={}", conversationId));
+        emitter.onTimeout(() -> {
+            log.warn("SSE 连接超时: conversationId={}", conversationId);
+            emitter.complete();
+        });
+        emitter.onError(throwable -> {
+            log.warn("SSE 连接异常: conversationId={}", conversationId, throwable);
+            emitter.complete();
+        });
+
         return emitter;
     }
 
@@ -104,5 +151,13 @@ public class AiController {
         Long userId = SecurityUtils.getCurrentUserId();
         aiConversationService.closeConversation(userId, conversationId);
         return Result.success();
+    }
+
+    @Operation(summary = "解锁对话额度（消耗1代币，额度上限+10）")
+    @PostMapping("/{conversationId}/unlock")
+    public Result<UnlockQuotaResponse> unlockQuota(@PathVariable Long conversationId) {
+        Long userId = SecurityUtils.getCurrentUserId();
+        UnlockQuotaResponse response = aiConversationService.unlockQuota(userId, conversationId);
+        return Result.success(response);
     }
 }

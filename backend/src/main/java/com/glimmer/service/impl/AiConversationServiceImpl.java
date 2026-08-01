@@ -12,6 +12,7 @@ import com.glimmer.config.ai.DeepSeekProperties;
 import com.glimmer.entity.AiConversation;
 import com.glimmer.entity.AiMessage;
 import com.glimmer.entity.TokenTransaction;
+import com.glimmer.entity.User;
 import com.glimmer.mapper.AiConversationMapper;
 import com.glimmer.mapper.AiMessageMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
@@ -25,6 +26,8 @@ import com.glimmer.service.dto.AiMessageVO;
 import com.glimmer.service.dto.ConversationDetailVO;
 import com.glimmer.service.dto.SendMessageResponse;
 import com.glimmer.service.dto.StreamMessageDTO;
+import com.glimmer.service.dto.UnlockQuotaResponse;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -33,7 +36,9 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -46,10 +51,18 @@ import java.util.stream.Collectors;
 @Service
 public class AiConversationServiceImpl implements AiConversationService {
 
-    /** 单个会话最大消息数（见开发文档 §2.6.1） */
-    private static final int MAX_MESSAGES = 100;
+    /** 单个会话安全硬上限消息数（防异常暴涨，不再作为业务关闭线） */
+    private static final int SAFETY_MAX_MESSAGES = 500;
     /** 开启会话消耗代币 */
     private static final int START_CONVERSATION_TOKEN_COST = 1;
+    /** 免费会话每日轮次上限 */
+    private static final int FREE_DAILY_QUOTA = 10;
+    /** 每次解锁增加的轮次 */
+    private static final int UNLOCK_QUOTA_STEP = 10;
+    /** 摘要提取时取最近的消息条数（10 轮 = 20 条） */
+    private static final int SUMMARY_MESSAGE_LIMIT = 20;
+    /** 上海时区，用于每日额度重置判断 */
+    private static final ZoneId ZONE_SHANGHAI = ZoneId.of("Asia/Shanghai");
 
     private final AiConversationMapper aiConversationMapper;
     private final AiMessageMapper aiMessageMapper;
@@ -59,6 +72,7 @@ public class AiConversationServiceImpl implements AiConversationService {
     private final UserService userService;
     private final StringRedisTemplate stringRedisTemplate;
     private final TokenBalanceHelper tokenBalanceHelper;
+    private final ObjectMapper objectMapper;
 
     /** 缓存 key：AI 会话上下文 ai:ctx:{conversationId}，List 存 role:content，TTL 1 小时 */
     private static final String CACHE_KEY_AI_CTX = "ai:ctx:%d";
@@ -71,7 +85,8 @@ public class AiConversationServiceImpl implements AiConversationService {
                                      DeepSeekProperties deepSeekProperties,
                                      UserService userService,
                                      StringRedisTemplate stringRedisTemplate,
-                                     TokenBalanceHelper tokenBalanceHelper) {
+                                     TokenBalanceHelper tokenBalanceHelper,
+                                     ObjectMapper objectMapper) {
         this.aiConversationMapper = aiConversationMapper;
         this.aiMessageMapper = aiMessageMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
@@ -80,6 +95,7 @@ public class AiConversationServiceImpl implements AiConversationService {
         this.userService = userService;
         this.stringRedisTemplate = stringRedisTemplate;
         this.tokenBalanceHelper = tokenBalanceHelper;
+        this.objectMapper = objectMapper;
     }
 
     // ==================== Redis 上下文缓存 ====================
@@ -157,23 +173,99 @@ public class AiConversationServiceImpl implements AiConversationService {
         tx.setSource("ai_chat");
         tokenTransactionMapper.insert(tx);
 
-        // 4. 插入 ai_conversation
+        // 4. 插入 ai_conversation（付费会话：初始额度 10 轮）
         LocalDateTime now = LocalDateTime.now();
         AiConversation conversation = new AiConversation();
         conversation.setUserId(userId);
         conversation.setStatus("active");
         conversation.setMessageCount(0);
-        conversation.setMaxMessages(MAX_MESSAGES);
+        conversation.setMaxMessages(SAFETY_MAX_MESSAGES);
         conversation.setStartedAt(now);
         conversation.setLastActiveAt(now);
+        conversation.setConversationType("paid");
+        conversation.setQuotaUsed(0);
+        conversation.setQuotaLimit(UNLOCK_QUOTA_STEP);
+        conversation.setTitle("✨ 新对话");
         aiConversationMapper.insert(conversation);
 
-        log.info("AI 会话开启成功: userId={}, conversationId={}", userId, conversation.getId());
+        log.info("AI 付费会话开启成功: userId={}, conversationId={}", userId, conversation.getId());
         return toConversationVO(conversation);
     }
 
     @Override
+    public AiConversationVO getOrCreateFreeConversation(Long userId) {
+        // 查找用户当前 active 的 free 会话
+        AiConversation free = aiConversationMapper.selectOne(
+                new LambdaQueryWrapper<AiConversation>()
+                        .eq(AiConversation::getUserId, userId)
+                        .eq(AiConversation::getConversationType, "free")
+                        .eq(AiConversation::getStatus, "active")
+                        .last("LIMIT 1"));
+        if (free != null) {
+            resetQuotaIfStale(free);
+            return toConversationVO(free);
+        }
+
+        // 无免费会话，创建一个（不消耗代币）
+        LocalDateTime now = LocalDateTime.now();
+        AiConversation conversation = new AiConversation();
+        conversation.setUserId(userId);
+        conversation.setStatus("active");
+        conversation.setMessageCount(0);
+        conversation.setMaxMessages(SAFETY_MAX_MESSAGES);
+        conversation.setStartedAt(now);
+        conversation.setLastActiveAt(now);
+        conversation.setConversationType("free");
+        conversation.setQuotaUsed(0);
+        conversation.setQuotaLimit(FREE_DAILY_QUOTA);
+        conversation.setQuotaResetDate(LocalDate.now(ZONE_SHANGHAI));
+        conversation.setTitle("🌙 每日闲聊");
+        aiConversationMapper.insert(conversation);
+
+        log.info("AI 免费会话创建成功: userId={}, conversationId={}", userId, conversation.getId());
+        return toConversationVO(conversation);
+    }
+
+    /**
+     * 免费会话额度懒重置：若 quotaResetDate < today，重置为每日免费额度。
+     * 仅 free 类型生效，paid 类型跳过。
+     */
+    private void resetQuotaIfStale(AiConversation conversation) {
+        if (!"free".equals(conversation.getConversationType())) {
+            return;
+        }
+        LocalDate today = LocalDate.now(ZONE_SHANGHAI);
+        if (conversation.getQuotaResetDate() == null || conversation.getQuotaResetDate().isBefore(today)) {
+            aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                    .eq(AiConversation::getId, conversation.getId())
+                    .set(AiConversation::getQuotaUsed, 0)
+                    .set(AiConversation::getQuotaLimit, FREE_DAILY_QUOTA)
+                    .set(AiConversation::getQuotaResetDate, today));
+            conversation.setQuotaUsed(0);
+            conversation.setQuotaLimit(FREE_DAILY_QUOTA);
+            conversation.setQuotaResetDate(today);
+            log.info("免费会话额度已重置: conversationId={}, today={}", conversation.getId(), today);
+        }
+    }
+
+    /**
+     * 从用户首条消息生成会话标题（截取前 20 字）。
+     */
+    private String generateTitle(String content) {
+        if (content == null || content.trim().isEmpty()) {
+            return "新对话";
+        }
+        String title = content.trim().replaceAll("\\s+", " ");
+        if (title.length() > 20) {
+            return title.substring(0, 20) + "...";
+        }
+        return title;
+    }
+
+    @Override
     public PageResult<AiConversationVO> getConversationList(Long userId, int page, int size) {
+        // 确保免费会话存在（首次访问 AI 页面时自动创建）
+        getOrCreateFreeConversation(userId);
         Page<AiConversation> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<AiConversation> wrapper = new LambdaQueryWrapper<AiConversation>()
                 .eq(AiConversation::getUserId, userId)
@@ -187,6 +279,8 @@ public class AiConversationServiceImpl implements AiConversationService {
     @Override
     public ConversationDetailVO getConversationDetail(Long userId, Long conversationId) {
         AiConversation conversation = checkConversationOwner(userId, conversationId);
+        // 进入详情时懒重置免费会话额度
+        resetQuotaIfStale(conversation);
         List<AiMessage> messages = aiMessageMapper.selectList(
                 new LambdaQueryWrapper<AiMessage>()
                         .eq(AiMessage::getConversationId, conversationId)
@@ -199,8 +293,12 @@ public class AiConversationServiceImpl implements AiConversationService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public SendMessageResponse sendMessage(Long userId, Long conversationId, String content) {
+        // 注意：不加 @Transactional —— 否则 deepSeekClient.chatCompletion（最长 60s）
+        // 会持有 DB 连接，可能导致 HikariCP 连接池耗尽（池仅 10 个连接）。
+        // 各 DB 操作各自 auto-commit；若 DeepSeek 失败抛异常，用户消息已存但无 AI 回复，
+        // 前端可重试或刷新。
+
         // 1. 校验会话属于当前用户
         AiConversation conversation = checkConversationOwner(userId, conversationId);
 
@@ -209,8 +307,18 @@ public class AiConversationServiceImpl implements AiConversationService {
             throw new BusinessException(ErrorCode.AI_CONVERSATION_CLOSED);
         }
 
-        // 3. 校验 message_count < max_messages（达上限自动关闭并抛异常）
-        int maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : MAX_MESSAGES;
+        // 3. 懒重置免费会话额度
+        resetQuotaIfStale(conversation);
+
+        // 4. 配额校验：1轮 = 1用户消息 + 1AI回复，额度用完不可发送
+        int quotaUsed = conversation.getQuotaUsed() != null ? conversation.getQuotaUsed() : 0;
+        int quotaLimit = conversation.getQuotaLimit() != null ? conversation.getQuotaLimit() : FREE_DAILY_QUOTA;
+        if (quotaUsed >= quotaLimit) {
+            throw new BusinessException(ErrorCode.AI_QUOTA_EXHAUSTED);
+        }
+
+        // 5. 安全硬上限校验（防异常暴涨）
+        int maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : SAFETY_MAX_MESSAGES;
         if (conversation.getMessageCount() != null && conversation.getMessageCount() >= maxMessages) {
             closeConversationInternal(conversation);
             throw new BusinessException(ErrorCode.AI_CONVERSATION_CLOSED);
@@ -218,7 +326,7 @@ public class AiConversationServiceImpl implements AiConversationService {
 
         LocalDateTime now = LocalDateTime.now();
 
-        // 4. 插入 ai_message（role='user'）
+        // 6. 插入 ai_message（role='user'）
         AiMessage userMessage = new AiMessage();
         userMessage.setConversationId(conversationId);
         userMessage.setRole("user");
@@ -226,45 +334,28 @@ public class AiConversationServiceImpl implements AiConversationService {
         userMessage.setCreatedAt(now);
         aiMessageMapper.insert(userMessage);
 
-        // 5. 更新 message_count += 1, last_active_at
+        // 7. 更新 message_count += 1, last_active_at；首条消息时同步设置标题
         int newCountAfterUser = (conversation.getMessageCount() == null ? 0 : conversation.getMessageCount()) + 1;
-        updateConversationStats(conversationId, newCountAfterUser, now);
-
-        // 6. 拉取历史消息（优先 Redis 缓存，未命中查 DB 并回填）
-        int maxContext = deepSeekProperties.getMaxContextMessages();
-        List<String[]> cachedHistory = readContextFromCache(conversationId);
-        List<DeepSeekMessage> deepSeekMessages = new ArrayList<>();
-        String systemPrompt = deepSeekProperties.getSystemPrompt();
-        if (StringUtils.hasText(systemPrompt)) {
-            deepSeekMessages.add(new DeepSeekMessage("system", systemPrompt));
-        }
-
-        if (!cachedHistory.isEmpty()) {
-            // 命中缓存，直接用
-            for (String[] rc : cachedHistory) {
-                String role = "ai".equals(rc[0]) ? "assistant" : rc[0];
-                deepSeekMessages.add(new DeepSeekMessage(role, rc[1]));
-            }
+        boolean isFirstMessage = (conversation.getMessageCount() == null || conversation.getMessageCount() == 0);
+        if (isFirstMessage) {
+            String title = generateTitle(content);
+            aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                    .eq(AiConversation::getId, conversationId)
+                    .set(AiConversation::getMessageCount, newCountAfterUser)
+                    .set(AiConversation::getLastActiveAt, now)
+                    .set(AiConversation::getTitle, title));
+            conversation.setTitle(title);
         } else {
-            // 缓存未命中，查 DB 并回填缓存
-            Page<AiMessage> contextPage = new Page<>(1, maxContext);
-            LambdaQueryWrapper<AiMessage> contextWrapper = new LambdaQueryWrapper<AiMessage>()
-                    .eq(AiMessage::getConversationId, conversationId)
-                    .orderByDesc(AiMessage::getCreatedAt);
-            IPage<AiMessage> contextResult = aiMessageMapper.selectPage(contextPage, contextWrapper);
-            List<AiMessage> history = contextResult.getRecords();
-            java.util.Collections.reverse(history);
-            for (AiMessage m : history) {
-                String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
-                deepSeekMessages.add(new DeepSeekMessage(role, m.getContent()));
-                appendToContextCache(conversationId, m.getRole(), m.getContent(), maxContext);
-            }
+            updateConversationStats(conversationId, newCountAfterUser, now);
         }
 
-        // 8. 调用 DeepSeek（失败抛 BusinessException，事务回滚 user 消息插入）
+        // 8. 构建上下文（含记忆注入 + 摘要优化，优先 Redis 缓存）
+        List<DeepSeekMessage> deepSeekMessages = buildContextWithSummary(userId, conversation, content, userMessage.getId());
+
+        // 9. 调用 DeepSeek（失败抛 BusinessException，事务回滚 user 消息插入）
         String aiContent = deepSeekClient.chatCompletion(deepSeekMessages);
 
-        // 9. 插入 ai_message（role='ai'）
+        // 10. 插入 ai_message（role='ai'）
         LocalDateTime aiTime = LocalDateTime.now();
         AiMessage aiMessage = new AiMessage();
         aiMessage.setConversationId(conversationId);
@@ -273,35 +364,46 @@ public class AiConversationServiceImpl implements AiConversationService {
         aiMessage.setCreatedAt(aiTime);
         aiMessageMapper.insert(aiMessage);
 
-        // 10. 将新消息写入缓存（user + ai）
+        // 11. 将新消息写入缓存（user + ai）
+        int maxContext = deepSeekProperties.getMaxContextMessages();
         appendToContextCache(conversationId, "user", content, maxContext);
         appendToContextCache(conversationId, "ai", aiContent, maxContext);
 
-        // 11. 更新 message_count += 1, last_active_at
+        // 12. 更新 message_count += 1, quota_used += 1, last_active_at
         int newCountAfterAi = newCountAfterUser + 1;
-        // 12. 若 message_count >= max_messages：自动关闭
+        int newQuotaUsed = quotaUsed + 1;
+        boolean quotaExhausted = newQuotaUsed >= quotaLimit;
+        // 安全硬上限触发时关闭会话
         boolean shouldClose = newCountAfterAi >= maxMessages;
         if (shouldClose) {
             aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
                     .eq(AiConversation::getId, conversationId)
                     .set(AiConversation::getMessageCount, newCountAfterAi)
+                    .set(AiConversation::getQuotaUsed, newQuotaUsed)
                     .set(AiConversation::getLastActiveAt, aiTime)
                     .set(AiConversation::getStatus, "closed"));
-            // 会话关闭，清除上下文缓存
             evictContextCache(conversationId);
         } else {
-            updateConversationStats(conversationId, newCountAfterAi, aiTime);
+            aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                    .eq(AiConversation::getId, conversationId)
+                    .set(AiConversation::getMessageCount, newCountAfterAi)
+                    .set(AiConversation::getQuotaUsed, newQuotaUsed)
+                    .set(AiConversation::getLastActiveAt, aiTime));
         }
 
-        log.info("AI 消息发送成功: userId={}, conversationId={}, messageCount={}", userId, conversationId, newCountAfterAi);
+        log.info("AI 消息发送成功: userId={}, conversationId={}, messageCount={}, quotaUsed={}/{}",
+                userId, conversationId, newCountAfterAi, newQuotaUsed, quotaLimit);
 
-        // 12. 返回 SendMessageResponse
+        // 13. 返回 SendMessageResponse（含配额信息）
         SendMessageResponse response = new SendMessageResponse();
         response.setUserMessage(toMessageVO(userMessage));
         response.setAiMessage(toMessageVO(aiMessage));
         response.setConversationStatus(shouldClose ? "closed" : "active");
         response.setMessageCount(newCountAfterAi);
         response.setMaxMessages(maxMessages);
+        response.setQuotaUsed(newQuotaUsed);
+        response.setQuotaLimit(quotaLimit);
+        response.setQuotaExhausted(quotaExhausted);
         return response;
     }
 
@@ -318,11 +420,138 @@ public class AiConversationServiceImpl implements AiConversationService {
     }
 
     @Override
+    public UnlockQuotaResponse unlockQuota(Long userId, Long conversationId) {
+        // 1. 校验会话归属
+        AiConversation conversation = checkConversationOwner(userId, conversationId);
+
+        // 2. 校验会话 active
+        if (!"active".equals(conversation.getStatus())) {
+            throw new BusinessException(ErrorCode.AI_CONVERSATION_CLOSED);
+        }
+
+        // 3. 懒重置免费会话额度（若跨天则无需解锁）
+        resetQuotaIfStale(conversation);
+
+        // 4. 校验额度已耗尽（仅耗尽时才需解锁）
+        int quotaUsed = conversation.getQuotaUsed() != null ? conversation.getQuotaUsed() : 0;
+        int quotaLimit = conversation.getQuotaLimit() != null ? conversation.getQuotaLimit() : FREE_DAILY_QUOTA;
+        if (quotaUsed < quotaLimit) {
+            throw new BusinessException(ErrorCode.BUSINESS_ERROR, "当前额度未耗尽，无需解锁");
+        }
+
+        // 5. 扣代币（分布式锁 + 余额校验 + 乐观锁兜底，自带独立事务）
+        User user = tokenBalanceHelper.deduct(userId, 1);
+
+        // 6. 写流水
+        TokenTransaction tx = new TokenTransaction();
+        tx.setUserId(userId);
+        tx.setType("spend");
+        tx.setAmount(1);
+        tx.setSource("ai_chat_unlock");
+        tokenTransactionMapper.insert(tx);
+
+        // 7. 额度上限 += UNLOCK_QUOTA_STEP（先更新额度，让用户能立即继续聊天）
+        int newQuotaLimit = quotaLimit + UNLOCK_QUOTA_STEP;
+        aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                .eq(AiConversation::getId, conversationId)
+                .set(AiConversation::getQuotaLimit, newQuotaLimit));
+        conversation.setQuotaLimit(newQuotaLimit);
+
+        // 8. best-effort 生成摘要（在所有 DB 操作之后，无事务包裹，避免 DeepSeek 同步调用占用 DB 连接）
+        boolean summaryGenerated = generateSummary(conversation, userId);
+
+        log.info("AI 对话额度解锁成功: userId={}, conversationId={}, newQuotaLimit={}, summaryGenerated={}",
+                userId, conversationId, newQuotaLimit, summaryGenerated);
+
+        // 9. 返回响应
+        UnlockQuotaResponse response = new UnlockQuotaResponse();
+        response.setConversationId(conversationId);
+        response.setQuotaUsed(quotaUsed);
+        response.setQuotaLimit(newQuotaLimit);
+        response.setTokenBalance(user.getTokenBalance());
+        response.setSummaryGenerated(summaryGenerated);
+        return response;
+    }
+
+    /**
+     * 生成会话摘要并更新用户记忆（best-effort，失败仅记录日志）。
+     * <p>
+     * 1. 取该会话最近 20 条消息（10 轮）
+     * 2. 调用 DeepSeek 生成 2-3 句摘要 + 3-5 个关键信息词条
+     * 3. 摘要写入 ai_conversation.summary
+     * 4. 关键信息覆盖写入 user.ai_context（JSON）
+     *
+     * @return 是否成功生成摘要
+     */
+    private boolean generateSummary(AiConversation conversation, Long userId) {
+        try {
+            // 1. 取最近 SUMMARY_MESSAGE_LIMIT 条消息
+            Page<AiMessage> msgPage = new Page<>(1, SUMMARY_MESSAGE_LIMIT);
+            LambdaQueryWrapper<AiMessage> wrapper = new LambdaQueryWrapper<AiMessage>()
+                    .eq(AiMessage::getConversationId, conversation.getId())
+                    .orderByDesc(AiMessage::getCreatedAt);
+            IPage<AiMessage> result = aiMessageMapper.selectPage(msgPage, wrapper);
+            List<AiMessage> recentMessages = result.getRecords();
+            if (recentMessages.isEmpty()) {
+                return false;
+            }
+            // 反转为正序（最早→最新）便于阅读
+            java.util.Collections.reverse(recentMessages);
+
+            // 2. 构建对话内容
+            StringBuilder dialogContent = new StringBuilder();
+            for (AiMessage m : recentMessages) {
+                String role = "user".equals(m.getRole()) ? "用户" : "AI";
+                dialogContent.append(role).append(": ").append(m.getContent()).append("\n");
+            }
+
+            // 3. 调用 DeepSeek 生成摘要
+            String prompt = String.format(deepSeekProperties.getSummaryPrompt(), dialogContent.toString());
+            List<DeepSeekMessage> summaryMessages = new ArrayList<>();
+            summaryMessages.add(new DeepSeekMessage("user", prompt));
+            String response = deepSeekClient.chatCompletion(summaryMessages);
+
+            // 4. 解析 JSON（容错：去除 ```json 包裹）
+            String json = response.trim();
+            if (json.startsWith("```")) {
+                json = json.replaceAll("^```(json)?\\s*", "").replaceAll("\\s*```$", "");
+            }
+            JsonNode root = objectMapper.readTree(json);
+
+            // 5. summary 写入 conversation.summary
+            if (root.has("summary") && !root.get("summary").isNull()) {
+                String summary = root.get("summary").asText();
+                if (StringUtils.hasText(summary)) {
+                    conversation.setSummary(summary);
+                    aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                            .eq(AiConversation::getId, conversation.getId())
+                            .set(AiConversation::getSummary, summary));
+                }
+            }
+
+            // 6. keyInfo 覆盖写入 user.ai_context（JSON 字符串）
+            if (root.has("keyInfo") && !root.get("keyInfo").isNull()) {
+                String keyInfoJson = objectMapper.writeValueAsString(root.get("keyInfo"));
+                tokenBalanceHelper.modifyWithLock(userId, u -> u.setAiContext(keyInfoJson));
+            }
+
+            log.info("会话摘要生成成功: conversationId={}, userId={}", conversation.getId(), userId);
+            return true;
+        } catch (Exception e) {
+            log.warn("会话摘要生成失败（best-effort，不影响解锁）: conversationId={}, err={}",
+                    conversation.getId(), e.getMessage());
+            return false;
+        }
+    }
+
+    @Override
     public void sendMessageStream(Long userId, Long conversationId, String content, SseEmitter emitter, ObjectMapper objectMapper) {
         AiConversation conversation = null;
         AiMessage userMessage = null;
-        int maxMessages = MAX_MESSAGES;
+        int maxMessages = SAFETY_MAX_MESSAGES;
         int newCountAfterUser = 0;
+        int quotaUsed = 0;
+        int quotaLimit = FREE_DAILY_QUOTA;
 
         try {
             // 1. 校验会话属于当前用户
@@ -334,8 +563,19 @@ public class AiConversationServiceImpl implements AiConversationService {
                 return;
             }
 
-            // 3. 校验 message_count < max_messages
-            maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : MAX_MESSAGES;
+            // 3. 懒重置免费会话额度
+            resetQuotaIfStale(conversation);
+
+            // 4. 配额校验：额度用完不可发送
+            quotaUsed = conversation.getQuotaUsed() != null ? conversation.getQuotaUsed() : 0;
+            quotaLimit = conversation.getQuotaLimit() != null ? conversation.getQuotaLimit() : FREE_DAILY_QUOTA;
+            if (quotaUsed >= quotaLimit) {
+                sendError(emitter, objectMapper, "本轮对话额度已用完");
+                return;
+            }
+
+            // 5. 安全硬上限校验
+            maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : SAFETY_MAX_MESSAGES;
             if (conversation.getMessageCount() != null && conversation.getMessageCount() >= maxMessages) {
                 closeConversationInternal(conversation);
                 sendError(emitter, objectMapper, "会话已关闭");
@@ -344,7 +584,7 @@ public class AiConversationServiceImpl implements AiConversationService {
 
             LocalDateTime now = LocalDateTime.now();
 
-            // 4. 插入 ai_message（role='user'）
+            // 6. 插入 ai_message（role='user'）
             userMessage = new AiMessage();
             userMessage.setConversationId(conversationId);
             userMessage.setRole("user");
@@ -352,14 +592,25 @@ public class AiConversationServiceImpl implements AiConversationService {
             userMessage.setCreatedAt(now);
             aiMessageMapper.insert(userMessage);
 
-            // 5. 更新 message_count += 1, last_active_at
+            // 7. 更新 message_count += 1, last_active_at；首条消息时同步设置标题
             newCountAfterUser = (conversation.getMessageCount() == null ? 0 : conversation.getMessageCount()) + 1;
-            updateConversationStats(conversationId, newCountAfterUser, now);
+            boolean isFirstMessage = (conversation.getMessageCount() == null || conversation.getMessageCount() == 0);
+            if (isFirstMessage) {
+                String title = generateTitle(content);
+                aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                        .eq(AiConversation::getId, conversationId)
+                        .set(AiConversation::getMessageCount, newCountAfterUser)
+                        .set(AiConversation::getLastActiveAt, now)
+                        .set(AiConversation::getTitle, title));
+                conversation.setTitle(title);
+            } else {
+                updateConversationStats(conversationId, newCountAfterUser, now);
+            }
 
-            // 6. 拉取历史消息并构建上下文（含摘要优化）
-            List<DeepSeekMessage> deepSeekMessages = buildContextWithSummary(userId, conversationId, content);
+            // 8. 构建上下文（含记忆注入 + 摘要优化，优先 Redis 缓存）
+            List<DeepSeekMessage> deepSeekMessages = buildContextWithSummary(userId, conversation, content, userMessage.getId());
 
-            // 7. 流式调用 DeepSeek（使用回调方式）
+            // 9. 流式调用 DeepSeek（使用回调方式）
             StringBuilder fullContent = new StringBuilder();
 
             deepSeekClient.chatCompletionStream(deepSeekMessages, new DeepSeekClient.StreamCallback() {
@@ -391,23 +642,38 @@ public class AiConversationServiceImpl implements AiConversationService {
                 aiMessage.setCreatedAt(aiTime);
                 aiMessageMapper.insert(aiMessage);
 
-                // 更新会话状态
+                // 将本轮 user + ai 消息写入 Redis 上下文缓存
+                int maxContext = deepSeekProperties.getMaxContextMessages();
+                appendToContextCache(conversationId, "user", content, maxContext);
+                appendToContextCache(conversationId, "ai", finalContent, maxContext);
+
+                // 更新会话状态：message_count += 1, quota_used += 1
                 int count = newCountAfterUser + 1;
+                int newQuotaUsed = quotaUsed + 1;
+                boolean quotaExhausted = newQuotaUsed >= quotaLimit;
                 boolean shouldClose = count >= maxMessages;
                 if (shouldClose) {
                     aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
                             .eq(AiConversation::getId, conversationId)
                             .set(AiConversation::getMessageCount, count)
+                            .set(AiConversation::getQuotaUsed, newQuotaUsed)
                             .set(AiConversation::getLastActiveAt, aiTime)
                             .set(AiConversation::getStatus, "closed"));
+                    evictContextCache(conversationId);
                 } else {
-                    updateConversationStats(conversationId, count, aiTime);
+                    aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                            .eq(AiConversation::getId, conversationId)
+                            .set(AiConversation::getMessageCount, count)
+                            .set(AiConversation::getQuotaUsed, newQuotaUsed)
+                            .set(AiConversation::getLastActiveAt, aiTime));
                 }
 
-                log.info("AI 流式消息发送成功: userId={}, conversationId={}, messageCount={}", userId, conversationId, count);
+                log.info("AI 流式消息发送成功: userId={}, conversationId={}, messageCount={}, quotaUsed={}/{}",
+                        userId, conversationId, count, newQuotaUsed, quotaLimit);
 
                 sendFinal(emitter, objectMapper, toMessageVO(aiMessage), toMessageVO(userMessage),
-                        shouldClose ? "closed" : "active", count, maxMessages);
+                        shouldClose ? "closed" : "active", count, maxMessages,
+                        newQuotaUsed, quotaLimit, quotaExhausted);
             } catch (Exception e) {
                 log.error("保存 AI 消息失败", e);
                 sendError(emitter, objectMapper, "保存消息失败");
@@ -444,6 +710,24 @@ public class AiConversationServiceImpl implements AiConversationService {
         }
     }
 
+    /**
+     * 发送最终消息（含配额信息，前端据此更新额度显示与触发解锁弹窗）
+     */
+    private void sendFinal(SseEmitter emitter, ObjectMapper objectMapper, AiMessageVO aiMessage, AiMessageVO userMessage,
+                           String conversationStatus, Integer messageCount, Integer maxMessages,
+                           Integer quotaUsed, Integer quotaLimit, Boolean quotaExhausted) {
+        try {
+            StreamMessageDTO dto = StreamMessageDTO.finalMessage(aiMessage, userMessage, conversationStatus,
+                    messageCount, maxMessages, quotaUsed, quotaLimit, quotaExhausted);
+            String json = objectMapper.writeValueAsString(dto);
+            emitter.send(SseEmitter.event().data(json));
+            emitter.complete();
+        } catch (Exception e) {
+            log.error("发送最终消息失败", e);
+            emitter.completeWithError(e);
+        }
+    }
+
     private void sendError(SseEmitter emitter, ObjectMapper objectMapper, String error) {
         try {
             StreamMessageDTO dto = StreamMessageDTO.error(error);
@@ -457,10 +741,17 @@ public class AiConversationServiceImpl implements AiConversationService {
     }
 
     /**
-     * 构建上下文消息（含长上下文摘要优化）
+     * 构建上下文消息（含记忆注入 + 长上下文摘要优化）
+     * <p>
+     * 记忆注入：在系统提示词后追加【关于这位用户的记忆】块，包含上次摘要和关键信息，
+     * 让 AI 具备跨会话记忆能力。AI 应自然使用，不直接说"根据记忆"。
+     *
+     * @param conversation      当前会话（用于读取 summary 和 id）
+     * @param excludeMessageId  刚插入的用户消息 ID，DB 查询时排除（避免与 currentContent 重复）
      */
-    private List<DeepSeekMessage> buildContextWithSummary(Long userId, Long conversationId, String currentContent) {
+    private List<DeepSeekMessage> buildContextWithSummary(Long userId, AiConversation conversation, String currentContent, Long excludeMessageId) {
         List<DeepSeekMessage> messages = new ArrayList<>();
+        Long conversationId = conversation.getId();
 
         // 添加系统提示词
         String systemPrompt = deepSeekProperties.getSystemPrompt();
@@ -468,58 +759,94 @@ public class AiConversationServiceImpl implements AiConversationService {
             messages.add(new DeepSeekMessage("system", systemPrompt));
         }
 
-        // 拉取历史消息（不包含刚刚插入的当前用户消息）
+        // === 记忆注入：在系统提示词后追加用户记忆块 ===
+        String summary = conversation.getSummary();
+        String aiContext = null;
+        try {
+            aiContext = userService.getAiContext(userId);
+        } catch (Exception e) {
+            log.warn("[AI记忆] 读取用户 ai_context 失败, userId={}, err={}", userId, e.getMessage());
+        }
+        if (StringUtils.hasText(summary) || StringUtils.hasText(aiContext)) {
+            StringBuilder memory = new StringBuilder("【关于这位用户的记忆】\n");
+            if (StringUtils.hasText(summary)) {
+                memory.append("上次摘要：").append(summary).append("\n");
+            }
+            if (StringUtils.hasText(aiContext)) {
+                memory.append("关键信息：").append(aiContext).append("\n");
+            }
+            memory.append("（自然地使用，不要说\"根据记忆\"）");
+            messages.add(new DeepSeekMessage("system", memory.toString()));
+        }
+
         int maxContext = deepSeekProperties.getMaxContextMessages();
-        Page<AiMessage> contextPage = new Page<>(1, maxContext);
-        LambdaQueryWrapper<AiMessage> contextWrapper = new LambdaQueryWrapper<AiMessage>()
-                .eq(AiMessage::getConversationId, conversationId)
-                .orderByDesc(AiMessage::getCreatedAt);
-        IPage<AiMessage> contextResult = aiMessageMapper.selectPage(contextPage, contextWrapper);
-        List<AiMessage> history = contextResult.getRecords();
 
-        // 如果历史消息过多，进行摘要优化
-        if (history.size() > 4) {
-            // 保留最近的 2 轮对话作为详细上下文
-            // 更早的对话合并为摘要
-            List<AiMessage> recentHistory = new ArrayList<>();
-            List<AiMessage> oldHistory = new ArrayList<>();
+        // 优先 Redis 缓存读取历史（缓存中不包含刚插入的用户消息，天然排除重复）
+        List<String[]> cachedAsc = readContextFromCache(conversationId); // ASC: 最早→最新
 
-            for (int i = 0; i < history.size(); i++) {
-                if (i < 4) { // 最近的 2 轮（用户+AI）
-                    recentHistory.add(history.get(i));
+        // 统一转为 DESC 顺序（最新在前），与原 DB 查询 orderByDesc 一致
+        List<String[]> historyDesc;
+        if (!cachedAsc.isEmpty()) {
+            historyDesc = new ArrayList<>(cachedAsc);
+            java.util.Collections.reverse(historyDesc); // ASC → DESC
+        } else {
+            // 缓存未命中，查 DB（排除刚插入的用户消息）并回填缓存
+            Page<AiMessage> contextPage = new Page<>(1, maxContext);
+            LambdaQueryWrapper<AiMessage> contextWrapper = new LambdaQueryWrapper<AiMessage>()
+                    .eq(AiMessage::getConversationId, conversationId)
+                    .ne(excludeMessageId != null, AiMessage::getId, excludeMessageId)
+                    .orderByDesc(AiMessage::getCreatedAt);
+            IPage<AiMessage> contextResult = aiMessageMapper.selectPage(contextPage, contextWrapper);
+            List<AiMessage> dbHistory = contextResult.getRecords(); // DESC: 最新在前
+
+            historyDesc = new ArrayList<>();
+            for (AiMessage m : dbHistory) {
+                historyDesc.add(new String[]{m.getRole(), m.getContent()});
+                appendToContextCache(conversationId, m.getRole(), m.getContent(), maxContext);
+            }
+        }
+
+        // 摘要优化（historyDesc 是 DESC 顺序：最新在前）
+        if (historyDesc.size() > 4) {
+            // 保留最近的 2 轮对话作为详细上下文，更早的合并为摘要
+            List<String[]> recentHistory = new ArrayList<>();
+            List<String[]> oldHistory = new ArrayList<>();
+
+            for (int i = 0; i < historyDesc.size(); i++) {
+                if (i < 4) {
+                    recentHistory.add(historyDesc.get(i));
                 } else {
-                    oldHistory.add(history.get(i));
+                    oldHistory.add(historyDesc.get(i));
                 }
             }
 
             // 构建旧对话摘要
             if (!oldHistory.isEmpty()) {
-                StringBuilder summary = new StringBuilder("【历史对话摘要】\n");
-                for (AiMessage m : oldHistory) {
-                    String roleName = "user".equals(m.getRole()) ? "用户" : "AI";
-                    // 截取每条消息的前 100 字
-                    String msgContent = m.getContent();
+                StringBuilder oldSummary = new StringBuilder("【历史对话摘要】\n");
+                for (String[] m : oldHistory) {
+                    String roleName = "user".equals(m[0]) ? "用户" : "AI";
+                    String msgContent = m[1];
                     if (msgContent.length() > 100) {
                         msgContent = msgContent.substring(0, 100) + "...";
                     }
-                    summary.append(roleName).append(": ").append(msgContent).append("\n");
+                    oldSummary.append(roleName).append(": ").append(msgContent).append("\n");
                 }
-                summary.append("【摘要结束】");
-                messages.add(new DeepSeekMessage("system", summary.toString()));
+                oldSummary.append("【摘要结束】");
+                messages.add(new DeepSeekMessage("system", oldSummary.toString()));
             }
 
             // 添加最近的详细对话（反转回正序）
             java.util.Collections.reverse(recentHistory);
-            for (AiMessage m : recentHistory) {
-                String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
-                messages.add(new DeepSeekMessage(role, m.getContent()));
+            for (String[] m : recentHistory) {
+                String role = "ai".equals(m[0]) ? "assistant" : m[0];
+                messages.add(new DeepSeekMessage(role, m[1]));
             }
         } else {
             // 历史消息较少，直接使用
-            java.util.Collections.reverse(history);
-            for (AiMessage m : history) {
-                String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
-                messages.add(new DeepSeekMessage(role, m.getContent()));
+            java.util.Collections.reverse(historyDesc);
+            for (String[] m : historyDesc) {
+                String role = "ai".equals(m[0]) ? "assistant" : m[0];
+                messages.add(new DeepSeekMessage(role, m[1]));
             }
         }
 
@@ -574,6 +901,11 @@ public class AiConversationServiceImpl implements AiConversationService {
         vo.setMaxMessages(conversation.getMaxMessages());
         vo.setStartedAt(conversation.getStartedAt());
         vo.setLastActiveAt(conversation.getLastActiveAt());
+        vo.setConversationType(conversation.getConversationType());
+        vo.setQuotaUsed(conversation.getQuotaUsed());
+        vo.setQuotaLimit(conversation.getQuotaLimit());
+        vo.setSummary(conversation.getSummary());
+        vo.setTitle(conversation.getTitle());
         return vo;
     }
 

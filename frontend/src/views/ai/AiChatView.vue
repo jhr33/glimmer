@@ -6,7 +6,8 @@ import {
   getConversations,
   getConversation,
   sendMessage,
-  sendMessageFetchStream
+  sendMessageFetchStream,
+  unlockQuota
 } from '@/api/ai'
 import { useUserStore } from '@/stores/user'
 
@@ -35,6 +36,12 @@ const messageListRef = ref(null)
 // 流式回复相关
 const streamingAiMessageId = ref(null)
 const streamingAiContent = ref('')
+// AbortController：组件卸载或重新发送时取消进行中的 fetch 流式请求，释放浏览器连接
+let abortController = null
+
+// === 额度解锁弹窗 ===
+const unlockDialogVisible = ref(false)
+const unlocking = ref(false)
 
 // 兼容分页结构
 function pickList(data) {
@@ -59,10 +66,52 @@ function canSend() {
   if (isBanned.value) return false
   const status = c.status
   if (status !== 'active') return false
-  const count = c.messageCount ?? c.message_count ?? 0
-  const max = c.maxMessages ?? c.max_messages ?? 100
-  if (count >= max) return false
+  // 配额校验：1轮 = 1用户消息 + 1AI回复，quotaUsed >= quotaLimit 不可发送
+  const quotaUsed = c.quotaUsed ?? 0
+  const quotaLimit = c.quotaLimit ?? 10
+  if (quotaUsed >= quotaLimit) return false
   return true
+}
+
+// 当前会话是否额度已耗尽（用于显示解锁提示）
+function isQuotaExhausted() {
+  const c = activeConversation.value
+  if (!c) return false
+  const quotaUsed = c.quotaUsed ?? 0
+  const quotaLimit = c.quotaLimit ?? 10
+  return quotaUsed >= quotaLimit
+}
+
+// 弹出解锁弹窗
+function showUnlockDialog() {
+  unlockDialogVisible.value = true
+}
+
+// 解锁额度：消耗 1 代币，额度 +10
+async function handleUnlock() {
+  const c = activeConversation.value
+  if (!c) return
+  unlocking.value = true
+  try {
+    const res = await unlockQuota(conversationIdOf(c))
+    const data = res.data
+    if (data) {
+      c.quotaLimit = data.quotaLimit
+      c.quotaUsed = data.quotaUsed
+    }
+    // 刷新用户代币余额
+    userStore.fetchUserInfo().catch(() => {})
+    unlockDialogVisible.value = false
+    ElMessage.success('已解锁 10 轮对话，继续聊聊吧～')
+  } catch (e) {
+    if (e?.code === 4003) {
+      ElMessage.error('代币不足，无法解锁')
+    } else {
+      ElMessage.error(e.message || '解锁失败')
+    }
+  } finally {
+    unlocking.value = false
+  }
 }
 
 function handleBanned(e) {
@@ -154,6 +203,9 @@ function backToList() {
 async function handleSend() {
   const c = activeConversation.value
   if (!c) return
+  // 防止并发发送：上一次流式请求未完成时，禁止发起新请求
+  // 否则旧 AbortController 被覆盖，旧连接泄漏，可能导致浏览器 6 连接耗尽
+  if (sending.value) return
   if (isBanned.value) {
     ElMessage.error('账号已被封禁，无法发送')
     return
@@ -165,7 +217,10 @@ async function handleSend() {
     return
   }
   sending.value = true
-  
+
+  // 创建 AbortController，支持组件卸载时取消请求
+  abortController = new AbortController()
+
   // 添加用户消息
   const userMsg = {
     id: `temp-${Date.now()}`,
@@ -193,6 +248,7 @@ async function handleSend() {
   
   try {
     await sendMessageFetchStream(conversationIdOf(c), content, (data) => {
+      // 传递 signal 支持取消
       if (data.type === 'delta') {
         // 增量内容，更新流式消息
         streamingAiContent.value += data.delta || ''
@@ -226,14 +282,30 @@ async function handleSend() {
         if (data.maxMessages != null) {
           c.maxMessages = data.maxMessages
         }
+        // 更新配额信息
+        if (data.quotaUsed != null) {
+          c.quotaUsed = data.quotaUsed
+        }
+        if (data.quotaLimit != null) {
+          c.quotaLimit = data.quotaLimit
+        }
         streamingAiMessageId.value = null
         streamingAiContent.value = ''
         nextTick().then(() => scrollToBottom())
+        // 额度耗尽时弹出解锁窗
+        if (data.quotaExhausted === true) {
+          showUnlockDialog()
+        }
       } else if (data.type === 'error') {
-        // 错误处理
-        throw new Error(data.error)
+        // 错误处理：额度耗尽时弹解锁窗而非普通错误
+        const errMsg = data.error || ''
+        if (errMsg.includes('额度已用完') || errMsg.includes('额度')) {
+          showUnlockDialog()
+          return
+        }
+        throw new Error(errMsg)
       }
-    })
+    }, abortController.signal)
   } catch (e) {
     const aiMsgIdx = messages.value.findIndex(m => m.id === streamingAiMessageId.value)
     if (aiMsgIdx >= 0) {
@@ -245,9 +317,15 @@ async function handleSend() {
     if (e?.code === 4010 && activeConversation.value) {
       activeConversation.value.status = 'closed'
     }
-    ElMessage.error(e.message || '发送失败')
+    // 额度耗尽错误（4020）弹解锁窗
+    if (e?.code === 4020 || (e?.message && e.message.includes('额度'))) {
+      showUnlockDialog()
+    } else {
+      ElMessage.error(e.message || '发送失败')
+    }
   } finally {
     sending.value = false
+    abortController = null
   }
 }
 
@@ -284,6 +362,15 @@ onMounted(() => {
   syncUserStatus()
   fetchList()
 })
+
+// 组件卸载时取消进行中的流式请求，释放浏览器 HTTP 连接
+// 这是防止"使用一段时间后通知接口超时"的关键修复
+onUnmounted(() => {
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+})
 </script>
 
 <template>
@@ -315,9 +402,13 @@ onMounted(() => {
             @click="openConversation(c)"
           >
             <div class="conv-main">
-              <div class="conv-title">会话 #{{ conversationIdOf(c) }}</div>
+              <div class="conv-title">
+                <span v-if="c.conversationType === 'free'" class="free-badge">🌙</span>
+                <span v-else class="paid-badge">✨</span>
+                {{ c.title || ('会话 #' + conversationIdOf(c)) }}
+              </div>
               <div class="conv-meta">
-                <span class="meta-text">消息：{{ c.messageCount ?? c.message_count ?? 0 }}/{{ c.maxMessages ?? c.max_messages ?? 100 }}</span>
+                <span class="meta-text">额度：{{ c.quotaUsed ?? 0 }}/{{ c.quotaLimit ?? 10 }} 轮</span>
               </div>
             </div>
             <el-button size="small" @click.stop="openConversation(c)">查看</el-button>
@@ -339,9 +430,14 @@ onMounted(() => {
 
     <!-- 对话详情 -->
     <div v-else class="detail-scene">
-      <!-- 顶部：只显示 AI 名字 glimmer -->
+      <!-- 顶部：AI 名字 + 额度显示 -->
       <div class="detail-header">
         <div class="ai-name">✨ glimmer</div>
+        <div class="quota-display">
+          <span v-if="activeConversation?.conversationType === 'free'" class="free-tag">🌙 免费</span>
+          <span v-else class="paid-tag">✨ 付费</span>
+          <span class="quota-text">{{ activeConversation?.quotaUsed ?? 0 }}/{{ activeConversation?.quotaLimit ?? 10 }} 轮</span>
+        </div>
         <button class="back-btn" @click="backToList">← 返回</button>
       </div>
 
@@ -357,9 +453,16 @@ onMounted(() => {
           class="message-item"
           :class="{ mine: isUserMsg(m) }"
         >
-          <div class="message-content">{{ m.content }}</div>
+          <div class="message-content">
+            <span v-if="m.isStreaming && !m.content" class="typing-indicator">
+              <span class="dot"></span>
+              <span class="dot"></span>
+              <span class="dot"></span>
+            </span>
+            <span v-else>{{ m.content }}</span>
+          </div>
         </div>
-        
+
       </div>
 
       <!-- 输入框 -->
@@ -381,6 +484,17 @@ onMounted(() => {
             发送
           </el-button>
         </template>
+        <template v-else-if="isQuotaExhausted() && !isBanned">
+          <el-alert
+            title="今晚已经聊了好多轮了～消耗 1 枚代币可以解锁 10 轮继续聊 🌙"
+            type="warning"
+            :closable="false"
+            show-icon
+          />
+          <el-button type="warning" @click="showUnlockDialog">
+            🔓 解锁（-1代币）
+          </el-button>
+        </template>
         <template v-else>
           <el-alert
             :title="isBanned ? '账号已被封禁，无法发送消息' : '会话已关闭，无法发送消息'"
@@ -391,6 +505,28 @@ onMounted(() => {
         </template>
       </div>
     </div>
+
+    <!-- 额度解锁弹窗 -->
+    <el-dialog
+      v-model="unlockDialogVisible"
+      title="🌙 额度已达上限"
+      width="420px"
+      :close-on-click-modal="false"
+      align-center
+    >
+      <div class="unlock-dialog-body">
+        <p class="unlock-tip">
+          今晚已经聊了 <strong>{{ activeConversation?.quotaUsed ?? 0 }}</strong> 轮了～<br>
+          消耗 1 枚代币可以解锁 10 轮继续聊 🌙
+        </p>
+      </div>
+      <template #footer>
+        <el-button @click="unlockDialogVisible = false">取消</el-button>
+        <el-button type="warning" :loading="unlocking" @click="handleUnlock">
+          🔓 解锁（-1代币）
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -564,9 +700,113 @@ onMounted(() => {
 /* 输入框 */
 .chat-input {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 12px 20px;
   background: #f5f7fa;
   border-top: 1px solid #dcdfe6;
+}
+
+/* 会话列表：免费/付费标记 */
+.free-badge {
+  display: inline-block;
+  background: #fef0e6;
+  color: #e6a23c;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.paid-badge {
+  display: inline-block;
+  background: #f0f9eb;
+  color: #67c23a;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+
+/* 详情页：额度显示 */
+.quota-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  justify-content: center;
+}
+.free-tag {
+  background: #fef0e6;
+  color: #e6a23c;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.paid-tag {
+  background: #f0f9eb;
+  color: #67c23a;
+  padding: 2px 10px;
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.quota-text {
+  font-size: 14px;
+  color: #606266;
+  font-weight: 500;
+}
+
+/* 解锁弹窗 */
+.unlock-dialog-body {
+  text-align: center;
+  padding: 12px 0;
+}
+.unlock-tip {
+  font-size: 15px;
+  line-height: 1.8;
+  color: #606266;
+  margin: 0;
+}
+.unlock-tip strong {
+  color: #e6a23c;
+  font-size: 18px;
+}
+
+/* AI 正在思考的打字动画 */
+.typing-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+.typing-indicator .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #c0c4cc;
+  animation: typing-bounce 1.4s infinite ease-in-out;
+}
+.typing-indicator .dot:nth-child(1) {
+  animation-delay: 0s;
+}
+.typing-indicator .dot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.typing-indicator .dot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes typing-bounce {
+  0%, 60%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  30% {
+    transform: translateY(-8px);
+    opacity: 1;
+  }
 }
 </style>

@@ -114,7 +114,9 @@ public class DeepSeekClient {
             connection.setDoOutput(true);
             connection.setDoInput(true);
             connection.setConnectTimeout(30000);
-            connection.setReadTimeout(0); // 流式读取不超时
+            // 设置合理的读取超时（120s），避免 DeepSeek API 卡住时线程永远阻塞
+            // 原来设为 0（无限）会导致 SSE 连接和浏览器连接被长期占用，最终耗尽浏览器连接池
+            connection.setReadTimeout(120000);
 
             // 发送请求体
             String jsonRequest = objectMapper.writeValueAsString(request);

@@ -150,6 +150,15 @@ public class UserServiceImpl implements UserService {
     }
 
     @Override
+    public String getAiContext(Long userId) {
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            return null;
+        }
+        return user.getAiContext();
+    }
+
+    @Override
     public PageResult<UserAdminVO> getUserListForAdmin(String status, String role, int page, int size) {
         Page<User> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<User> wrapper = new LambdaQueryWrapper<User>()

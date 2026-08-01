@@ -51,4 +51,12 @@ public interface UserService {
      * 若被封禁抛出 USER_BANNED，若被禁言抛出 USER_MUTED
      */
     void checkUserNotMuted(Long userId);
+
+    /**
+     * 获取用户的 AI 记忆关键信息（user.ai_context 字段，JSON 字符串原值）
+     * 供 AI 服务在系统提示词中注入用户记忆。
+     *
+     * @return ai_context 原文，可能为 null
+     */
+    String getAiContext(Long userId);
 }

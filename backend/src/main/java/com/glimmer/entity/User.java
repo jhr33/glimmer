@@ -37,6 +37,9 @@ public class User {
 
     private Integer pendingReportCount;
 
+    /** AI 记忆关键信息 (JSON 字符串, 如 {"studying":"考研","mood":"压力大"}) */
+    private String aiContext;
+
     @Version
     private Integer version;
 

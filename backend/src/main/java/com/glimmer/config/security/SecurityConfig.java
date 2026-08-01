@@ -6,6 +6,7 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
+import jakarta.servlet.DispatcherType;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -44,6 +45,13 @@ public class SecurityConfig {
             .cors(cors -> cors.configurationSource(corsConfigurationSource()))
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // ASYNC 分派放行：SseEmitter 完成时触发异步分派，
+                // JwtAuthenticationFilter（OncePerRequestFilter）默认不处理 ASYNC 分派 → SecurityContext 为空
+                // → AuthorizationFilter 抛 AccessDeniedException → ExceptionTranslationFilter 也跳过 ASYNC → 异常传播到容器
+                .dispatcherTypeMatchers(DispatcherType.ASYNC).permitAll()
+                // 错误页必须放行：Tomcat 异常/404 会 forward 到 /error，
+                // 若不放行会触发 "Unable to handle the Spring Security Exception because the response is already committed"
+                .requestMatchers("/error").permitAll()
                 // 白名单接口（见开发文档 §2.1.3 / §4.3）
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/announcements", "/api/announcements/**").permitAll()
