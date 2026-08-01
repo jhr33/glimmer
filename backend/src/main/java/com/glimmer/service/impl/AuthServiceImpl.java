@@ -100,7 +100,8 @@ public class AuthServiceImpl implements AuthService {
         LoginResponse response = new LoginResponse();
         response.setToken(token);
         response.setUser(toUserVO(user));
-        log.info("用户登录成功: id={}, username={}", user.getId(), user.getUsername());
+        response.setNicknameSet(user.getNickname() != null && !user.getNickname().isEmpty());
+        log.info("用户登录成功: id={}, username={}, nicknameSet={}", user.getId(), user.getUsername(), response.getNicknameSet());
         return response;
     }
 

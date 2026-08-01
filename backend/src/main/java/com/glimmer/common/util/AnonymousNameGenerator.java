@@ -1,5 +1,8 @@
 package com.glimmer.common.util;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -45,5 +48,50 @@ public class AnonymousNameGenerator {
         // 拼接成4位编号：取ID后2位 + 随机2位，保证包含用户信息又有随机性
         String number = idSuffix.substring(2) + String.format("%02d", randomPart);
         return adjective + "的" + noun + number;
+    }
+
+    /**
+     * 纯随机生成匿名昵称（不依赖用户ID）
+     * 每次调用生成一个全新的随机名称，用于篝火临时匿名身份
+     *
+     * @return 随机匿名昵称，如 "温柔的观星者3821"
+     */
+    public static String generateRandom() {
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        String adjective = ADJECTIVES[random.nextInt(ADJECTIVES.length)];
+        String noun = NOUNS[random.nextInt(NOUNS.length)];
+        int number = random.nextInt(10000);
+        return adjective + "的" + noun + String.format("%04d", number);
+    }
+
+    /**
+     * 按日稳定生成匿名名称：同一用户 + 同一篝火 + 同一天 = 同一个名称
+     * 跨天后自动变化，保证每日新鲜感
+     *
+     * @param userId     用户ID
+     * @param campfireId 篝火ID
+     * @return 稳定的匿名昵称
+     */
+    public static String generateStable(Long userId, Long campfireId) {
+        String dateStr = LocalDate.now().format(DateTimeFormatter.BASIC_ISO_DATE);
+        long seed = hash(userId, campfireId, dateStr);
+        Random random = new Random(seed);
+        String adjective = ADJECTIVES[random.nextInt(ADJECTIVES.length)];
+        String noun = NOUNS[random.nextInt(NOUNS.length)];
+        int number = random.nextInt(10000);
+        return adjective + "的" + noun + String.format("%04d", number);
+    }
+
+    /**
+     * 组合哈希：userId + campfireId + date → 稳定种子
+     */
+    private static long hash(Long userId, Long campfireId, String dateStr) {
+        long h = 1125899906842597L;
+        h = (h * 31) + (userId != null ? userId : 0);
+        h = (h * 31) + (campfireId != null ? campfireId : 0);
+        for (int i = 0; i < dateStr.length(); i++) {
+            h = (h * 31) + dateStr.charAt(i);
+        }
+        return h;
     }
 }

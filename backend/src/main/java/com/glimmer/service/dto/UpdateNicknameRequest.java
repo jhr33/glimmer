@@ -11,6 +11,6 @@ import lombok.Data;
 public class UpdateNicknameRequest {
 
     @NotBlank(message = "昵称不能为空")
-    @Size(max = 50, message = "昵称最长50个字符")
+    @Size(min = 2, max = 20, message = "昵称长度为 2-20 个字符")
     private String nickname;
 }

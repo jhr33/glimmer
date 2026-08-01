@@ -5,8 +5,10 @@ import com.glimmer.common.response.Result;
 import com.glimmer.common.util.SecurityUtils;
 import com.glimmer.service.CampfireService;
 import com.glimmer.service.dto.CampfireMessageVO;
+import com.glimmer.service.dto.CampfireMemberVO;
 import com.glimmer.service.dto.CampfireVO;
 import com.glimmer.service.dto.CreateCampfireRequest;
+import com.glimmer.service.dto.JoinCampfireRequest;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -72,10 +74,13 @@ public class CampfireController {
 
     @Operation(summary = "加入篝火")
     @PostMapping("/{campfireId}/join")
-    public Result<Void> joinCampfire(@PathVariable Long campfireId) {
+    public Result<CampfireMemberVO> joinCampfire(@PathVariable Long campfireId,
+                                                @RequestBody(required = false) JoinCampfireRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();
-        campfireService.joinCampfire(userId, campfireId);
-        return Result.success();
+        String displayMode = (request != null && request.getDisplayMode() != null)
+                ? request.getDisplayMode() : "nickname";
+        CampfireMemberVO member = campfireService.joinCampfire(userId, campfireId, displayMode);
+        return Result.success(member);
     }
 
     @Operation(summary = "退出篝火（创建者不可退出）")

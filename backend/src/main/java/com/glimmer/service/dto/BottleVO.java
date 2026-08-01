@@ -13,6 +13,12 @@ public class BottleVO {
     private Long id;
     private String content;
     private Long userId;
+
+    /**
+     * 瓶子作者的匿名名称（user.anonymousName）
+     */
+    private String anonymousName;
+
     private String status;
     private LocalDateTime createdAt;
 

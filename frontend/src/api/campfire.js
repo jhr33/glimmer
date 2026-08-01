@@ -21,8 +21,8 @@ export function getCampfireMessages(campfireId, params) {
 }
 
 // 加入篝火（校验人数上限）
-export function joinCampfire(campfireId) {
-  return request({ url: `/campfires/${campfireId}/join`, method: 'post' })
+export function joinCampfire(campfireId, data) {
+  return request({ url: `/campfires/${campfireId}/join`, method: 'post', data })
 }
 
 // 退出篝火

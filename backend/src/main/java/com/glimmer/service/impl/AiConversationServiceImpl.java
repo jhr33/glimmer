@@ -7,15 +7,15 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.RedisUtils;
 import com.glimmer.config.ai.DeepSeekProperties;
 import com.glimmer.entity.AiConversation;
 import com.glimmer.entity.AiMessage;
 import com.glimmer.entity.TokenTransaction;
-import com.glimmer.entity.User;
 import com.glimmer.mapper.AiConversationMapper;
 import com.glimmer.mapper.AiMessageMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
-import com.glimmer.mapper.UserMapper;
+import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.service.AiConversationService;
 import com.glimmer.service.UserService;
 import com.glimmer.service.ai.DeepSeekClient;
@@ -27,6 +27,7 @@ import com.glimmer.service.dto.SendMessageResponse;
 import com.glimmer.service.dto.StreamMessageDTO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -52,26 +53,91 @@ public class AiConversationServiceImpl implements AiConversationService {
 
     private final AiConversationMapper aiConversationMapper;
     private final AiMessageMapper aiMessageMapper;
-    private final UserMapper userMapper;
     private final TokenTransactionMapper tokenTransactionMapper;
     private final DeepSeekClient deepSeekClient;
     private final DeepSeekProperties deepSeekProperties;
     private final UserService userService;
+    private final StringRedisTemplate stringRedisTemplate;
+    private final TokenBalanceHelper tokenBalanceHelper;
+
+    /** 缓存 key：AI 会话上下文 ai:ctx:{conversationId}，List 存 role:content，TTL 1 小时 */
+    private static final String CACHE_KEY_AI_CTX = "ai:ctx:%d";
+    private static final long AI_CTX_TTL_HOURS = 1;
 
     public AiConversationServiceImpl(AiConversationMapper aiConversationMapper,
                                      AiMessageMapper aiMessageMapper,
-                                     UserMapper userMapper,
                                      TokenTransactionMapper tokenTransactionMapper,
                                      DeepSeekClient deepSeekClient,
                                      DeepSeekProperties deepSeekProperties,
-                                     UserService userService) {
+                                     UserService userService,
+                                     StringRedisTemplate stringRedisTemplate,
+                                     TokenBalanceHelper tokenBalanceHelper) {
         this.aiConversationMapper = aiConversationMapper;
         this.aiMessageMapper = aiMessageMapper;
-        this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
         this.deepSeekClient = deepSeekClient;
         this.deepSeekProperties = deepSeekProperties;
         this.userService = userService;
+        this.stringRedisTemplate = stringRedisTemplate;
+        this.tokenBalanceHelper = tokenBalanceHelper;
+    }
+
+    // ==================== Redis 上下文缓存 ====================
+
+    /**
+     * 追加一条消息到 Redis 上下文 List（左侧插入，保留最近 maxContext 条）
+     * 格式："role|content"
+     */
+    private void appendToContextCache(Long conversationId, String role, String content, int maxContext) {
+        try {
+            String key = String.format(CACHE_KEY_AI_CTX, conversationId);
+            String value = role + "|" + content;
+            stringRedisTemplate.opsForList().leftPush(key, value);
+            // 保留最近 maxContext 条
+            stringRedisTemplate.opsForList().trim(key, 0, Math.max(0, maxContext - 1));
+            // 幂等设置 TTL
+            stringRedisTemplate.expire(key, java.time.Duration.ofHours(AI_CTX_TTL_HOURS));
+        } catch (Exception e) {
+            log.warn("[Redis] appendToContextCache 失败 conversationId={}, err={}", conversationId, e.getMessage());
+        }
+    }
+
+    /**
+     * 从 Redis 读取上下文（正序：从最早到最近）
+     * Redis List 是 LPUSH 后倒序的（最新在左），所以需要反转
+     */
+    private List<String[]> readContextFromCache(Long conversationId) {
+        try {
+            String key = String.format(CACHE_KEY_AI_CTX, conversationId);
+            List<String> raw = stringRedisTemplate.opsForList().range(key, 0, -1);
+            if (raw == null || raw.isEmpty()) {
+                return List.of();
+            }
+            // raw 是从最新到最早（LPUSH 顺序），反转为从最早到最新
+            java.util.Collections.reverse(raw);
+            List<String[]> result = new ArrayList<>(raw.size());
+            for (String s : raw) {
+                int idx = s.indexOf('|');
+                if (idx > 0) {
+                    result.add(new String[]{s.substring(0, idx), s.substring(idx + 1)});
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            log.warn("[Redis] readContextFromCache 失败 conversationId={}, err={}", conversationId, e.getMessage());
+            return List.of();
+        }
+    }
+
+    /**
+     * 清除上下文缓存（会话关闭时调用）
+     */
+    private void evictContextCache(Long conversationId) {
+        try {
+            stringRedisTemplate.delete(String.format(CACHE_KEY_AI_CTX, conversationId));
+        } catch (Exception e) {
+            log.warn("[Redis] evictContextCache 失败 conversationId={}, err={}", conversationId, e.getMessage());
+        }
     }
 
     @Override
@@ -80,23 +146,10 @@ public class AiConversationServiceImpl implements AiConversationService {
         // 1. 校验用户非 banned/禁言
         userService.checkUserNotMuted(userId);
 
-        // 2. 校验代币余额 >= 1
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        if (user.getTokenBalance() == null || user.getTokenBalance() < START_CONVERSATION_TOKEN_COST) {
-            throw new BusinessException(ErrorCode.TOKEN_NOT_ENOUGH);
-        }
+        // 2. 扣代币（分布式锁 + 余额校验 + 乐观锁兜底，余额不足/冲突由 helper 抛出）
+        tokenBalanceHelper.deduct(userId, START_CONVERSATION_TOKEN_COST);
 
-        // 3. 扣代币（乐观锁 @Version）
-        user.setTokenBalance(user.getTokenBalance() - START_CONVERSATION_TOKEN_COST);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "代币扣减冲突，请重试");
-        }
-
-        // 4. 写流水：source='ai_chat'
+        // 3. 写流水：source='ai_chat'
         TokenTransaction tx = new TokenTransaction();
         tx.setUserId(userId);
         tx.setType("spend");
@@ -104,7 +157,7 @@ public class AiConversationServiceImpl implements AiConversationService {
         tx.setSource("ai_chat");
         tokenTransactionMapper.insert(tx);
 
-        // 5. 插入 ai_conversation
+        // 4. 插入 ai_conversation
         LocalDateTime now = LocalDateTime.now();
         AiConversation conversation = new AiConversation();
         conversation.setUserId(userId);
@@ -177,26 +230,35 @@ public class AiConversationServiceImpl implements AiConversationService {
         int newCountAfterUser = (conversation.getMessageCount() == null ? 0 : conversation.getMessageCount()) + 1;
         updateConversationStats(conversationId, newCountAfterUser, now);
 
-        // 6. 拉取历史消息（最近 maxContextMessages 条）作为上下文
+        // 6. 拉取历史消息（优先 Redis 缓存，未命中查 DB 并回填）
         int maxContext = deepSeekProperties.getMaxContextMessages();
-        Page<AiMessage> contextPage = new Page<>(1, maxContext);
-        LambdaQueryWrapper<AiMessage> contextWrapper = new LambdaQueryWrapper<AiMessage>()
-                .eq(AiMessage::getConversationId, conversationId)
-                .orderByDesc(AiMessage::getCreatedAt);
-        IPage<AiMessage> contextResult = aiMessageMapper.selectPage(contextPage, contextWrapper);
-        List<AiMessage> history = contextResult.getRecords();
-        // 倒序查询后反转为正序
-        java.util.Collections.reverse(history);
-
-        // 7. 构建 DeepSeek 消息列表：system + 历史消息
+        List<String[]> cachedHistory = readContextFromCache(conversationId);
         List<DeepSeekMessage> deepSeekMessages = new ArrayList<>();
         String systemPrompt = deepSeekProperties.getSystemPrompt();
         if (StringUtils.hasText(systemPrompt)) {
             deepSeekMessages.add(new DeepSeekMessage("system", systemPrompt));
         }
-        for (AiMessage m : history) {
-            String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
-            deepSeekMessages.add(new DeepSeekMessage(role, m.getContent()));
+
+        if (!cachedHistory.isEmpty()) {
+            // 命中缓存，直接用
+            for (String[] rc : cachedHistory) {
+                String role = "ai".equals(rc[0]) ? "assistant" : rc[0];
+                deepSeekMessages.add(new DeepSeekMessage(role, rc[1]));
+            }
+        } else {
+            // 缓存未命中，查 DB 并回填缓存
+            Page<AiMessage> contextPage = new Page<>(1, maxContext);
+            LambdaQueryWrapper<AiMessage> contextWrapper = new LambdaQueryWrapper<AiMessage>()
+                    .eq(AiMessage::getConversationId, conversationId)
+                    .orderByDesc(AiMessage::getCreatedAt);
+            IPage<AiMessage> contextResult = aiMessageMapper.selectPage(contextPage, contextWrapper);
+            List<AiMessage> history = contextResult.getRecords();
+            java.util.Collections.reverse(history);
+            for (AiMessage m : history) {
+                String role = "ai".equals(m.getRole()) ? "assistant" : m.getRole();
+                deepSeekMessages.add(new DeepSeekMessage(role, m.getContent()));
+                appendToContextCache(conversationId, m.getRole(), m.getContent(), maxContext);
+            }
         }
 
         // 8. 调用 DeepSeek（失败抛 BusinessException，事务回滚 user 消息插入）
@@ -211,9 +273,13 @@ public class AiConversationServiceImpl implements AiConversationService {
         aiMessage.setCreatedAt(aiTime);
         aiMessageMapper.insert(aiMessage);
 
-        // 10. 更新 message_count += 1, last_active_at
+        // 10. 将新消息写入缓存（user + ai）
+        appendToContextCache(conversationId, "user", content, maxContext);
+        appendToContextCache(conversationId, "ai", aiContent, maxContext);
+
+        // 11. 更新 message_count += 1, last_active_at
         int newCountAfterAi = newCountAfterUser + 1;
-        // 11. 若 message_count >= max_messages：自动关闭
+        // 12. 若 message_count >= max_messages：自动关闭
         boolean shouldClose = newCountAfterAi >= maxMessages;
         if (shouldClose) {
             aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
@@ -221,6 +287,8 @@ public class AiConversationServiceImpl implements AiConversationService {
                     .set(AiConversation::getMessageCount, newCountAfterAi)
                     .set(AiConversation::getLastActiveAt, aiTime)
                     .set(AiConversation::getStatus, "closed"));
+            // 会话关闭，清除上下文缓存
+            evictContextCache(conversationId);
         } else {
             updateConversationStats(conversationId, newCountAfterAi, aiTime);
         }
@@ -494,6 +562,8 @@ public class AiConversationServiceImpl implements AiConversationService {
         aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
                 .eq(AiConversation::getId, conversation.getId())
                 .set(AiConversation::getStatus, "closed"));
+        // 清除上下文缓存
+        evictContextCache(conversation.getId());
     }
 
     private AiConversationVO toConversationVO(AiConversation conversation) {

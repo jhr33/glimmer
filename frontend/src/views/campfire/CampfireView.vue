@@ -1,7 +1,8 @@
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
-import { useRouter, onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Switch } from '@element-plus/icons-vue'
 import {
   getCampfires,
   createCampfire,
@@ -53,17 +54,51 @@ const currentCost = computed(
   () => maxMembersOptions.find((o) => o.value === createForm.maxMembers)?.cost ?? 0
 )
 
+// 当前身份："nickname" | "anonymous"
+const currentMode = ref('nickname')
+// 当前使用的显示名称（由后端返回的成员记录中的 anonymousName 字段）
+// 初始从昵称值，anonymous时由后端决定anonymousName
+const currentIdentityName = ref('')
+
 const activeCampfire = ref(null)
 const detailLoading = ref(false)
 const messages = ref([])
 const inputContent = ref('')
 const sending = ref(false)
+const switching = ref(false)
 const stompClient = ref(null)
 const stompConnected = ref(false)
 const stompConnecting = ref(false)
 const subscription = ref(null)
 const messageListRef = ref(null)
 const messageLoading = ref(false)
+
+// 10分钟超时自动退出
+const IDLE_TIMEOUT_MS = 10 * 60 * 1000
+const IDLE_STORAGE_KEY = 'glimmer_campfire_last_active'
+
+function readLastActive() {
+  try {
+    const raw = localStorage.getItem(IDLE_STORAGE_KEY)
+    if (!raw) return null
+    return JSON.parse(raw)
+  } catch (e) {
+    return null
+  }
+}
+
+function writeLastActive(campfireId) {
+  const id = campfireIdOf(campfireId)
+  if (!id) {
+    localStorage.removeItem(IDLE_STORAGE_KEY)
+    return
+  }
+  localStorage.setItem(IDLE_STORAGE_KEY, JSON.stringify({ campfireId: id, time: Date.now() }))
+}
+
+function clearLastActive() {
+  localStorage.removeItem(IDLE_STORAGE_KEY)
+}
 
 function pickList(data) {
   if (!data) return []
@@ -158,15 +193,25 @@ async function handleCreate() {
 async function enterCampfire(campfire) {
   const id = campfireIdOf(campfire)
   if (!id) return
+  // 默认初始状态为昵称模式
+  currentMode.value = 'nickname'
   detailLoading.value = true
   messages.value = []
   inputContent.value = ''
   try {
-    await joinCampfire(id)
+    const joinRes = await joinCampfire(id, { displayMode: currentMode.value })
+    // 使用后端返回的成员信息（含 anonymousName）
+    if (joinRes?.data?.anonymousName) {
+      currentIdentityName.value = joinRes.data.anonymousName
+    } else {
+      currentIdentityName.value = userStore.userInfo?.nickname || '旅人'
+    }
     const res = await getCampfire(id)
     activeCampfire.value = res.data
     await loadMessages(id)
     connectStomp(id)
+    // 页面记录活跃时间
+    writeLastActive(id)
   } catch (e) {
     handleBanned(e)
     ElMessage.error('进入篝火失败')
@@ -265,8 +310,9 @@ function disconnectStomp() {
 async function leaveCurrentCampfire() {
   const c = activeCampfire.value
   if (!c) return
+  const id = campfireIdOf(c)
   try {
-    await leaveCampfire(campfireIdOf(c))
+    await leaveCampfire(id)
   } catch (e) {
     handleBanned(e)
   } finally {
@@ -274,6 +320,9 @@ async function leaveCurrentCampfire() {
     activeCampfire.value = null
     messages.value = []
     inputContent.value = ''
+    currentIdentityName.value = ''
+    currentMode.value = 'nickname'
+    clearLastActive()
   }
 }
 
@@ -299,6 +348,42 @@ async function handleExtinguish() {
     if (e !== 'cancel') {
       handleBanned(e)
     }
+  }
+}
+
+/**
+ * 切换身份：nickname <-> anonymous
+ * 调用 joinCampfire 更新 campfire_member.anonymous_name
+ * 之后重新拉取历史消息不影响，但是当前显示
+ */
+async function toggleIdentity() {
+  const c = activeCampfire.value
+  if (!c) return
+  const id = campfireIdOf(c)
+  if (!id) return
+  const newMode = currentMode.value === 'nickname' ? 'anonymous' : 'nickname'
+  switching.value = true
+  try {
+    // 后端返回更新后的成员信息（含新的 anonymousName）
+    const joinRes = await joinCampfire(id, { displayMode: newMode })
+    currentMode.value = newMode
+    // 直接使用后端返回的 anonymousName
+    if (joinRes?.data?.anonymousName) {
+      currentIdentityName.value = joinRes.data.anonymousName
+    } else if (newMode === 'nickname') {
+      currentIdentityName.value = userStore.userInfo?.nickname || '旅人'
+    } else {
+      currentIdentityName.value = '匿名旅人'
+    }
+    // 重新拉取历史消息，刷新消息中的名称
+    const msgRes = await getCampfireMessages(id, { page: 1, size: 50 })
+    messages.value = pickList(msgRes.data)
+    ElMessage.success(`已切换为：${currentIdentityName.value}`)
+  } catch (e) {
+    handleBanned(e)
+    ElMessage.error('切换身份失败')
+  } finally {
+    switching.value = false
   }
 }
 
@@ -334,6 +419,11 @@ function appendMessage(msg) {
     return
   }
   messages.value.push(msg)
+  // 如果是自己的消息，更新currentIdentityName
+  if ((msg.userId ?? msg.user_id) === currentUserId.value) {
+    const n = msg.anonymousName ?? msg.anonymous_name
+    if (n) currentIdentityName.value = n
+  }
   nextTick(() => scrollToBottom())
 }
 
@@ -350,23 +440,71 @@ function isMine(msg) {
   return msg.userId === uid || msg.user_id === uid
 }
 
+function handleVisibilityChange() {
+  if (!activeCampfire.value) return
+  if (document.visibilityState === 'hidden') {
+    // 记录离开时间
+    writeLastActive(activeCampfire.value)
+  } else if (document.visibilityState === 'visible') {
+    // 检查超过10分钟→自动退出
+    const last = readLastActive()
+    const now = Date.now()
+    if (last && last.campfireId === campfireIdOf(activeCampfire.value)) {
+      if (now - last.time > IDLE_TIMEOUT_MS) {
+        ElMessage.info('离开已超过10分钟，已自动退出篝火')
+        backToList()
+      } else {
+        // 10分钟内→无需重新进入，更新活跃时间
+        writeLastActive(activeCampfire.value)
+      }
+    }
+  }
+}
+
 // 监听用户信息变化，自动同步封禁状态
 watch(() => userStore.userInfo?.status, () => {
   isBanned.value = userStore.userInfo?.status === 'banned'
 })
 
-onMounted(() => {
+onMounted(async () => {
   isBanned.value = userStore.userInfo?.status === 'banned'
-  fetchList()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  // 检查是否有10分钟内未超时的篝火会话 → 直接进入该篝火
+  const last = readLastActive()
+  const now = Date.now()
+  if (last && now - last.time <= IDLE_TIMEOUT_MS) {
+    // 10分钟内返回 → 自动进入上次篝火，无需重选
+    try {
+      await fetchList()
+      const campfire = campfireList.value.find((c) => campfireIdOf(c) === last.campfireId)
+      if (campfire) {
+        await enterCampfire(campfire)
+        return
+      }
+      // 找不到该篝火了（可能被熄灭），正常进入列表
+    } catch (e) {
+      console.warn('恢复上次篝火失败，转入列表', e)
+    }
+  }
+  await fetchList()
 })
 
 onBeforeRouteLeave(async (to, from, next) => {
-  await leaveCurrentCampfire()
+  // 记录离开时间，但不掉 leaveCampfire — 不调用
+  if (activeCampfire.value) {
+    writeLastActive(activeCampfire.value)
+  }
+  disconnectStomp()
   next()
 })
 
 onUnmounted(() => {
-  leaveCurrentCampfire()
+  // 记录离开时间但不 leaveCampfire — 10分钟内回来可恢复
+  if (activeCampfire.value) {
+    writeLastActive(activeCampfire.value)
+  }
+  disconnectStomp()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 
@@ -439,6 +577,26 @@ onUnmounted(() => {
           </span>
         </div>
         <div class="chat-actions">
+          <!-- 身份切换区：右上角切换按钮 -->
+          <div class="identity-switcher">
+            <el-tooltip
+              :content="currentMode === 'nickname' ? '当前：昵称模式，点击切换为匿名' : '当前：匿名模式，点击切换为昵称'"
+              placement="bottom"
+            >
+              <el-button
+                size="small"
+                type="warning"
+                effect="light"
+                round
+                class="identity-btn"
+                :loading="switching"
+                @click="toggleIdentity"
+              >
+                <el-icon class="mode-icon"><Switch /></el-icon>
+                <span class="identity-name">{{ currentIdentityName || (currentMode === 'nickname' ? '🎭' : '👤') }}</span>
+              </el-button>
+            </el-tooltip>
+            </div>
           <el-button size="small" @click="backToList">返回列表</el-button>
           <el-button
             v-if="canExtinguish(activeCampfire)"
@@ -657,7 +815,27 @@ onUnmounted(() => {
 }
 .chat-actions {
   display: flex;
+  align-items: center;
   gap: 8px;
+}
+.identity-switcher {
+  margin-right: 4px;
+}
+.identity-btn {
+  max-width: 240px;
+  padding: 0 14px;
+  font-weight: 500;
+}
+.mode-icon {
+  margin-right: 4px;
+}
+.identity-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
 }
 .chat-body {
   flex: 1;

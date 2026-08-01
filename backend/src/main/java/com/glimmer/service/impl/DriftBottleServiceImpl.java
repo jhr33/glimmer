@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.DriftBottle;
 import com.glimmer.entity.DriftBottlePickRecord;
 import com.glimmer.entity.DriftBottleReply;
@@ -35,9 +36,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -57,6 +56,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     private final NotificationService notificationService;
     private final UserService userService;
     private final ReportMapper reportMapper;
+    private final TokenBalanceHelper tokenBalanceHelper;
 
     public DriftBottleServiceImpl(DriftBottleMapper driftBottleMapper,
                                   DriftBottleReplyMapper driftBottleReplyMapper,
@@ -66,7 +66,8 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                                   ObjectMapper objectMapper,
                                   NotificationService notificationService,
                                   UserService userService,
-                                  ReportMapper reportMapper) {
+                                  ReportMapper reportMapper,
+                                  TokenBalanceHelper tokenBalanceHelper) {
         this.driftBottleMapper = driftBottleMapper;
         this.driftBottleReplyMapper = driftBottleReplyMapper;
         this.driftBottlePickRecordMapper = driftBottlePickRecordMapper;
@@ -76,6 +77,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         this.notificationService = notificationService;
         this.userService = userService;
         this.reportMapper = reportMapper;
+        this.tokenBalanceHelper = tokenBalanceHelper;
     }
 
     @Override
@@ -157,7 +159,9 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .eq(DriftBottlePickRecord::getUserId, userId)
                 .set(DriftBottlePickRecord::getOpened, 1));
 
-        return toBottleVO(bottle);
+        BottleVO vo = toBottleVO(bottle);
+        fillAnonymousNames(java.util.Collections.singletonList(vo));
+        return vo;
     }
 
     @Override
@@ -216,7 +220,9 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                         .eq(DriftBottleReply::getBottleId, bottleId)
                         .notIn(bannedReplyIds != null && !bannedReplyIds.isEmpty(), DriftBottleReply::getId, bannedReplyIds)
                         .orderByAsc(DriftBottleReply::getCreatedAt));
-        return replies.stream().map(this::toReplyVO).collect(Collectors.toList());
+        List<BottleReplyVO> result = replies.stream().map(this::toReplyVO).collect(Collectors.toList());
+        fillReplyAnonymousNames(result);
+        return result;
     }
 
     @Override
@@ -329,6 +335,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .orderByDesc(DriftBottle::getCreatedAt);
         IPage<DriftBottle> result = driftBottleMapper.selectPage(pageParam, wrapper);
         List<BottleVO> list = result.getRecords().stream().map(this::toBottleVO).collect(Collectors.toList());
+        fillAnonymousNames(list);
 
         // 批量查询每个瓶子的回复数
         if (!list.isEmpty()) {
@@ -359,17 +366,12 @@ public class DriftBottleServiceImpl implements DriftBottleService {
      * 感谢奖励：给目标用户 +1代币 +1萤火（事务内）
      */
     private void thankReward(Long targetUserId, Long refId) {
-        User user = userMapper.selectById(targetUserId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        user.setTokenBalance(user.getTokenBalance() + 1);
-        user.setTotalFirefly(user.getTotalFirefly() + 1);
-        user.setFireflyBalance(user.getFireflyBalance() + 1);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "感谢奖励处理冲突，请重试");
-        }
+        // 感谢奖励：+1代币 +1累计萤火 +1萤火余额（分布式锁 + 乐观锁兜底）
+        tokenBalanceHelper.modifyWithLock(targetUserId, u -> {
+            u.setTokenBalance(u.getTokenBalance() + 1);
+            u.setTotalFirefly(u.getTotalFirefly() + 1);
+            u.setFireflyBalance(u.getFireflyBalance() + 1);
+        });
         TokenTransaction tx = new TokenTransaction();
         tx.setUserId(targetUserId);
         tx.setType("earn");
@@ -443,6 +445,32 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         vo.setContent(reply.getContent());
         vo.setCreatedAt(reply.getCreatedAt());
         return vo;
+    }
+
+    private void fillAnonymousNames(List<BottleVO> bottles) {
+        if (bottles == null || bottles.isEmpty()) return;
+        List<Long> userIds = bottles.stream()
+                .map(BottleVO::getUserId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (userIds.isEmpty()) return;
+        Map<Long, String> nameMap = userMapper.selectBatchIds(userIds).stream()
+                .collect(Collectors.toMap(User::getId, User::getAnonymousName, (a, b) -> a));
+        bottles.forEach(b -> b.setAnonymousName(nameMap.getOrDefault(b.getUserId(), "匿名旅人")));
+    }
+
+    private void fillReplyAnonymousNames(List<BottleReplyVO> replies) {
+        if (replies == null || replies.isEmpty()) return;
+        List<Long> userIds = replies.stream()
+                .map(BottleReplyVO::getUserId)
+                .filter(Objects::nonNull)
+                .distinct()
+                .collect(Collectors.toList());
+        if (userIds.isEmpty()) return;
+        Map<Long, String> nameMap = userMapper.selectBatchIds(userIds).stream()
+                .collect(Collectors.toMap(User::getId, User::getAnonymousName, (a, b) -> a));
+        replies.forEach(r -> r.setAnonymousName(nameMap.getOrDefault(r.getUserId(), "匿名旅人")));
     }
 
     private BottleSummaryVO toSummaryVO(DriftBottle bottle) {

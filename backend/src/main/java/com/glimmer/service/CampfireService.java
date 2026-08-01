@@ -2,6 +2,7 @@ package com.glimmer.service;
 
 import com.glimmer.common.response.PageResult;
 import com.glimmer.service.dto.CampfireMessageVO;
+import com.glimmer.service.dto.CampfireMemberVO;
 import com.glimmer.service.dto.CampfireVO;
 
 import java.util.List;
@@ -34,8 +35,13 @@ public interface CampfireService {
 
     /**
      * 加入篝火
+     *
+     * @param userId      用户ID
+     * @param campfireId  篝火ID
+     * @param displayMode 显示模式："nickname"(使用用户昵称) 或 "anonymous"(按日稳定匿名名称)
+     * @return 加入后的成员信息（含 anonymousName）
      */
-    void joinCampfire(Long userId, Long campfireId);
+    CampfireMemberVO joinCampfire(Long userId, Long campfireId, String displayMode);
 
     /**
      * 退出篝火（创建者不允许退出）

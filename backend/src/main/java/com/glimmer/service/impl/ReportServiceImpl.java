@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.RedisUtils;
 import com.glimmer.entity.CampfireMessage;
 import com.glimmer.entity.DriftBottle;
 import com.glimmer.entity.DriftBottleReply;
@@ -31,6 +32,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -69,12 +71,20 @@ public class ReportServiceImpl implements ReportService {
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
     private final PunishmentService punishmentService;
+    private final RedisUtils redis;
+
+    /** 缓存 key：同条信息 5 分钟内被举报次数 report:dup:{targetType}:{targetId} */
+    private static final String CACHE_KEY_DUP = "report:dup:%s:%d";
+    /** 缓存 key：用户 1 小时内被举报的不同 targetId Set report:multi:{userId} */
+    private static final String CACHE_KEY_MULTI = "report:multi:%d";
+    /** 缓存 key：用户当天被举报次数 report:today:{userId} */
+    private static final String CACHE_KEY_TODAY = "report:today:%d";
 
     public ReportServiceImpl(ReportMapper reportMapper, UserMapper userMapper,
                              DriftBottleMapper driftBottleMapper, DriftBottleReplyMapper driftBottleReplyMapper,
                              LetterMapper letterMapper, CampfireMessageMapper campfireMessageMapper,
                              NotificationService notificationService, ObjectMapper objectMapper,
-                             PunishmentService punishmentService) {
+                             PunishmentService punishmentService, RedisUtils redis) {
         this.reportMapper = reportMapper;
         this.userMapper = userMapper;
         this.driftBottleMapper = driftBottleMapper;
@@ -84,6 +94,7 @@ public class ReportServiceImpl implements ReportService {
         this.notificationService = notificationService;
         this.objectMapper = objectMapper;
         this.punishmentService = punishmentService;
+        this.redis = redis;
     }
 
     @Override
@@ -114,14 +125,13 @@ public class ReportServiceImpl implements ReportService {
         }
 
         // 4. 检查同一条信息短时间内是否被多次举报（5分钟内超过3次自动隐藏）
-        LocalDateTime duplicateTimeWindowStart = LocalDateTime.now().minusSeconds(DUPLICATE_REPORT_TIME_WINDOW_SECONDS);
-        Long duplicateReportCount = reportMapper.selectCount(new LambdaQueryWrapper<Report>()
-                .eq(Report::getTargetType, targetType)
-                .eq(Report::getTargetId, targetId)
-                .ge(Report::getCreatedAt, duplicateTimeWindowStart));
-        
-        boolean shouldHide = duplicateReportCount != null && duplicateReportCount >= 3;
-        
+        // 使用 Redis 计数器：report:dup:{targetType}:{targetId}，TTL 300s
+        String dupKey = String.format(CACHE_KEY_DUP, targetType, targetId);
+        Long dupCount = redis.incrWithTtl(dupKey, Duration.ofSeconds(DUPLICATE_REPORT_TIME_WINDOW_SECONDS));
+        long duplicateReportCount = dupCount != null ? dupCount : 0L;
+        // incr 后是含本次的次数，判断 >=3 表示含本次至少 3 次
+        boolean shouldHide = duplicateReportCount >= 3;
+
         // 5. 插入举报记录（uk_reporter_target 唯一约束兜底重复举报）
         Report report = new Report();
         report.setReporterId(reporterId);
@@ -133,32 +143,33 @@ public class ReportServiceImpl implements ReportService {
         try {
             reportMapper.insert(report);
         } catch (DuplicateKeyException e) {
+            // 唯一约束冲突，回滚 Redis 计数（避免误计）
+            redis.decr(dupKey);
             throw new BusinessException(ErrorCode.ALREADY_REPORTED);
         }
 
         // 6. 如果同一条信息短时间内被多次举报，自动隐藏该内容
         if (shouldHide) {
             hideTargetContent(targetType, targetId);
-            log.info("内容因短时间内被多次举报自动隐藏: targetType={}, targetId={}, reportCount={}", 
+            log.info("内容因短时间内被多次举报自动隐藏: targetType={}, targetId={}, reportCount={}",
                     targetType, targetId, duplicateReportCount);
         }
 
         // 7. 查询短时间内（1小时）该用户被举报的不同信息数量
-        LocalDateTime multiTargetTimeWindowStart = LocalDateTime.now().minusSeconds(MULTIPLE_TARGET_TIME_WINDOW_SECONDS);
-        Long multiTargetCount = reportMapper.selectCount(new LambdaQueryWrapper<Report>()
-                .eq(Report::getTargetUserId, targetUserId)
-                .ne(Report::getTargetId, targetId) // 排除当前这条
-                .ge(Report::getCreatedAt, multiTargetTimeWindowStart));
-        
+        // 使用 Redis Set：report:multi:{targetUserId}，存 targetId，TTL 3600s
+        String multiKey = String.format(CACHE_KEY_MULTI, targetUserId);
+        // SADD 当前 targetId（不包含本次之前的，所以先 add 再取 size）
+        redis.saddWithTtl(multiKey, Duration.ofSeconds(MULTIPLE_TARGET_TIME_WINDOW_SECONDS),
+                String.valueOf(targetId));
+        long multiTargetCount = redis.sCard(multiKey);
+        // multiTargetCount 含本次的 targetId，原 SQL 用 ne 排除当前条，这里 -1 对齐
+        long multiTargetCountExcludingCurrent = Math.max(0, multiTargetCount - 1);
+
         // 8. 查询当天该用户被举报次数
-        LocalDate today = LocalDate.now();
-        LocalDateTime startOfDay = today.atStartOfDay();
-        LocalDateTime endOfDay = today.atTime(23, 59, 59);
-        Long todayReportCountLong = reportMapper.selectCount(new LambdaQueryWrapper<Report>()
-                .eq(Report::getTargetUserId, targetUserId)
-                .ge(Report::getCreatedAt, startOfDay)
-                .le(Report::getCreatedAt, endOfDay));
-        int todayReportCount = todayReportCountLong != null ? todayReportCountLong.intValue() : 0;
+        // 使用 Redis 计数器：report:today:{targetUserId}，TTL 到次日 0 点
+        String todayKey = String.format(CACHE_KEY_TODAY, targetUserId);
+        Long todayCount = redis.incrWithTtl(todayKey, RedisUtils.ttlUntilEndOfDay());
+        int todayReportCount = todayCount != null ? todayCount.intValue() : 0;
 
         // 9. 更新被举报人 pending_report_count（乐观锁 @Version）
         User targetUser = userMapper.selectById(targetUserId);
@@ -172,8 +183,8 @@ public class ReportServiceImpl implements ReportService {
         // 条件1：一天内被举报超过3次
         // 条件2：短时间内（1小时）被举报多条不同信息（超过5条）
         boolean alreadyBanned = punishmentService.isUserBanned(targetUserId);
-        boolean shouldBan = !alreadyBanned && 
-                (todayReportCount > 3 || (multiTargetCount != null && multiTargetCount >= MULTIPLE_TARGET_REPORT_THRESHOLD));
+        boolean shouldBan = !alreadyBanned &&
+                (todayReportCount > 3 || multiTargetCountExcludingCurrent >= MULTIPLE_TARGET_REPORT_THRESHOLD);
         
         boolean updated = userMapper.updateById(targetUser) > 0;
         if (!updated) {

@@ -16,6 +16,11 @@ const loginForm = reactive({
   password: ''
 })
 
+// 首次登录昵称设置弹窗
+const nicknameDialogVisible = ref(false)
+const nicknameInput = ref('')
+const nicknameSubmitting = ref(false)
+
 const validateUsername = (rule, value, callback) => {
   if (!value) {
     callback(new Error('请输入用户名'))
@@ -50,10 +55,14 @@ async function handleLogin() {
   }
   loading.value = true
   try {
-    await userStore.login({
+    const data = await userStore.login({
       username: loginForm.username,
       password: loginForm.password
     })
+    if (data.nicknameSet === false || !data.user?.nickname) {
+      nicknameDialogVisible.value = true
+      return
+    }
     ElMessage.success('登录成功')
     const redirect = route.query.redirect || '/'
     router.replace(redirect)
@@ -62,6 +71,36 @@ async function handleLogin() {
   } finally {
     loading.value = false
   }
+}
+
+async function confirmNickname() {
+  const name = nicknameInput.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入昵称')
+    return
+  }
+  if (name.length < 2 || name.length > 20) {
+    ElMessage.warning('昵称长度为 2-20 个字符')
+    return
+  }
+  nicknameSubmitting.value = true
+  try {
+    await userStore.updateNickname(name)
+    nicknameDialogVisible.value = false
+    ElMessage.success('昵称设置成功')
+    const redirect = route.query.redirect || '/'
+    router.replace(redirect)
+  } catch (e) {
+    // 错误已拦截
+  } finally {
+    nicknameSubmitting.value = false
+  }
+}
+
+function skipNickname() {
+  nicknameDialogVisible.value = false
+  const redirect = route.query.redirect || '/'
+  router.replace(redirect)
 }
 
 function goRegister() {
@@ -112,6 +151,34 @@ function goRegister() {
         </div>
       </el-form>
     </div>
+
+    <!-- 首次登录昵称设置弹窗 -->
+    <el-dialog
+      v-model="nicknameDialogVisible"
+      title="设置你的昵称"
+      width="400px"
+      :close-on-click-modal="false"
+      center
+      class="nickname-dialog"
+    >
+      <div class="nickname-tip">
+        给自己取一个温暖的昵称吧，其他旅人会这样称呼你 ☘️
+      </div>
+      <el-input
+        v-model="nicknameInput"
+        placeholder="输入你的昵称（2-20字）"
+        maxlength="20"
+        show-word-limit
+        size="large"
+        @keyup.enter="confirmNickname"
+      />
+      <template #footer>
+        <el-button @click="skipNickname">跳过</el-button>
+        <el-button type="primary" :loading="nicknameSubmitting" @click="confirmNickname">
+          确认
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -151,5 +218,11 @@ function goRegister() {
   text-align: center;
   font-size: 14px;
   color: #666;
+}
+.nickname-dialog .nickname-tip {
+  text-align: center;
+  color: #909399;
+  font-size: 14px;
+  margin-bottom: 20px;
 }
 </style>

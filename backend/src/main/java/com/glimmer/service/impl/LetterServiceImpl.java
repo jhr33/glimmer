@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.DriftBottle;
 import com.glimmer.entity.DriftBottlePickRecord;
 import com.glimmer.entity.DriftBottleReply;
@@ -56,6 +57,7 @@ public class LetterServiceImpl implements LetterService {
     private final ObjectMapper objectMapper;
     private final UserService userService;
     private final ReportMapper reportMapper;
+    private final TokenBalanceHelper tokenBalanceHelper;
 
     public LetterServiceImpl(LetterMapper letterMapper,
                              UserMapper userMapper,
@@ -65,7 +67,8 @@ public class LetterServiceImpl implements LetterService {
                              DriftBottlePickRecordMapper driftBottlePickRecordMapper,
                              ObjectMapper objectMapper,
                              UserService userService,
-                             ReportMapper reportMapper) {
+                             ReportMapper reportMapper,
+                             TokenBalanceHelper tokenBalanceHelper) {
         this.letterMapper = letterMapper;
         this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
@@ -75,6 +78,7 @@ public class LetterServiceImpl implements LetterService {
         this.objectMapper = objectMapper;
         this.userService = userService;
         this.reportMapper = reportMapper;
+        this.tokenBalanceHelper = tokenBalanceHelper;
     }
 
     @Override
@@ -140,12 +144,8 @@ public class LetterServiceImpl implements LetterService {
         letter.setIsReplied(0);
         letterMapper.insert(letter);
 
-        // 扣代币 +1（乐观锁）
-        sender.setTokenBalance(sender.getTokenBalance() - 1);
-        boolean updated = userMapper.updateById(sender) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "代币扣减冲突，请重试");
-        }
+        // 扣代币（分布式锁 + 乐观锁兜底）
+        tokenBalanceHelper.deduct(senderId, 1);
 
         // 写流水：type=spend, source=write_letter, amount=1, ref_id=letter.id
         TokenTransaction tx = new TokenTransaction();
@@ -203,12 +203,8 @@ public class LetterServiceImpl implements LetterService {
                 .eq(Letter::getId, letterId)
                 .set(Letter::getIsReplied, 1));
 
-        // 扣代币（乐观锁）
-        user.setTokenBalance(user.getTokenBalance() - 1);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "代币扣减冲突，请重试");
-        }
+        // 扣代币（分布式锁 + 乐观锁兜底）
+        tokenBalanceHelper.deduct(userId, 1);
 
         // 写流水：type=spend, source=reply_letter, amount=1, ref_id=reply.id
         TokenTransaction tx = new TokenTransaction();
@@ -265,9 +261,9 @@ public class LetterServiceImpl implements LetterService {
         }
         LetterVO vo = toVO(letter);
         User sender = userMapper.selectById(letter.getSenderId());
-        vo.setSenderNickname(sender != null ? sender.getAnonymousName() : "匿名旅人");
+        vo.setSenderNickname(sender != null ? resolveLetterDisplayName(sender) : "匿名旅人");
         User receiver = userMapper.selectById(letter.getReceiverId());
-        vo.setReceiverNickname(receiver != null ? receiver.getAnonymousName() : "匿名旅人");
+        vo.setReceiverNickname(receiver != null ? resolveLetterDisplayName(receiver) : "匿名旅人");
 
         // 如果是漂流瓶回复来源，填充来源信息
         if ("bottle_reply".equals(letter.getSourceType()) && letter.getSourceId() != null) {
@@ -320,17 +316,12 @@ public class LetterServiceImpl implements LetterService {
      * 感谢奖励：给目标用户 +1代币 +1萤火（事务内）
      */
     private void thankReward(Long targetUserId, Long refId) {
-        User user = userMapper.selectById(targetUserId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        user.setTokenBalance(user.getTokenBalance() + 1);
-        user.setTotalFirefly(user.getTotalFirefly() + 1);
-        user.setFireflyBalance(user.getFireflyBalance() + 1);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "感谢奖励处理冲突，请重试");
-        }
+        // 感谢奖励：+1代币 +1累计萤火 +1萤火余额（分布式锁 + 乐观锁兜底）
+        tokenBalanceHelper.modifyWithLock(targetUserId, u -> {
+            u.setTokenBalance(u.getTokenBalance() + 1);
+            u.setTotalFirefly(u.getTotalFirefly() + 1);
+            u.setFireflyBalance(u.getFireflyBalance() + 1);
+        });
         TokenTransaction tx = new TokenTransaction();
         tx.setUserId(targetUserId);
         tx.setType("earn");
@@ -414,10 +405,20 @@ public class LetterServiceImpl implements LetterService {
         return letters.stream().map(l -> {
             LetterVO vo = toVO(l);
             User sender = userMap.get(l.getSenderId());
-            vo.setSenderNickname(sender != null ? sender.getAnonymousName() : "匿名旅人");
+            vo.setSenderNickname(sender != null ? resolveLetterDisplayName(sender) : "匿名旅人");
             User receiver = userMap.get(l.getReceiverId());
-            vo.setReceiverNickname(receiver != null ? receiver.getAnonymousName() : "匿名旅人");
+            vo.setReceiverNickname(receiver != null ? resolveLetterDisplayName(receiver) : "匿名旅人");
             return vo;
         }).collect(Collectors.toList());
+    }
+
+    /**
+     * 信件显示名称：优先使用用户自定义昵称，未设置则 fallback 到匿名名称
+     */
+    private String resolveLetterDisplayName(User user) {
+        if (user.getNickname() != null && !user.getNickname().isEmpty()) {
+            return user.getNickname();
+        }
+        return user.getAnonymousName() != null ? user.getAnonymousName() : "匿名旅人";
     }
 }

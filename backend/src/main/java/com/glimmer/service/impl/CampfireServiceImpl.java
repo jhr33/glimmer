@@ -1,11 +1,14 @@
 package com.glimmer.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.RedisUtils;
+import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.Campfire;
 import com.glimmer.entity.CampfireMember;
 import com.glimmer.entity.CampfireMessage;
@@ -17,15 +20,18 @@ import com.glimmer.mapper.CampfireMessageMapper;
 import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
+import com.glimmer.common.util.AnonymousNameGenerator;
 import com.glimmer.service.CampfireService;
 import com.glimmer.service.UserService;
 import com.glimmer.service.dto.CampfireMessageVO;
+import com.glimmer.service.dto.CampfireMemberVO;
 import com.glimmer.service.dto.CampfireVO;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
@@ -43,6 +49,10 @@ public class CampfireServiceImpl implements CampfireService {
     /** 篝火人数上限与代币消耗映射（10→1, 20→2, 30→3） */
     private static final Map<Integer, Integer> MAX_MEMBERS_TOKEN_COST = Map.of(10, 1, 20, 2, 30, 3);
 
+    /** 缓存 key：篝火成员身份名 campfire:member:{campfireId}:{userId} → anonymousName，TTL 30 分钟 */
+    private static final String CACHE_KEY_MEMBER = "campfire:member:%d:%d";
+    private static final Duration MEMBER_CACHE_TTL = Duration.ofMinutes(30);
+
     private final CampfireMapper campfireMapper;
     private final CampfireMemberMapper campfireMemberMapper;
     private final CampfireMessageMapper campfireMessageMapper;
@@ -51,6 +61,8 @@ public class CampfireServiceImpl implements CampfireService {
     private final SimpMessagingTemplate messagingTemplate;
     private final UserService userService;
     private final ReportMapper reportMapper;
+    private final RedisUtils redis;
+    private final TokenBalanceHelper tokenBalanceHelper;
 
     public CampfireServiceImpl(CampfireMapper campfireMapper,
                                CampfireMemberMapper campfireMemberMapper,
@@ -59,7 +71,9 @@ public class CampfireServiceImpl implements CampfireService {
                                TokenTransactionMapper tokenTransactionMapper,
                                SimpMessagingTemplate messagingTemplate,
                                UserService userService,
-                               ReportMapper reportMapper) {
+                               ReportMapper reportMapper,
+                               RedisUtils redis,
+                               TokenBalanceHelper tokenBalanceHelper) {
         this.campfireMapper = campfireMapper;
         this.campfireMemberMapper = campfireMemberMapper;
         this.campfireMessageMapper = campfireMessageMapper;
@@ -68,6 +82,31 @@ public class CampfireServiceImpl implements CampfireService {
         this.messagingTemplate = messagingTemplate;
         this.userService = userService;
         this.reportMapper = reportMapper;
+        this.redis = redis;
+        this.tokenBalanceHelper = tokenBalanceHelper;
+    }
+
+    /**
+     * 缓存成员身份名
+     */
+    private void cacheMemberName(Long campfireId, Long userId, String anonymousName) {
+        if (anonymousName != null && !anonymousName.isEmpty()) {
+            redis.set(String.format(CACHE_KEY_MEMBER, campfireId, userId), anonymousName, MEMBER_CACHE_TTL);
+        }
+    }
+
+    /**
+     * 读取缓存的成员身份名（未命中返回 null）
+     */
+    private String getCachedMemberName(Long campfireId, Long userId) {
+        return redis.get(String.format(CACHE_KEY_MEMBER, campfireId, userId));
+    }
+
+    /**
+     * 清除成员身份名缓存
+     */
+    private void evictMemberNameCache(Long campfireId, Long userId) {
+        redis.delete(String.format(CACHE_KEY_MEMBER, campfireId, userId));
     }
 
     @Override
@@ -95,23 +134,10 @@ public class CampfireServiceImpl implements CampfireService {
             throw new BusinessException(ErrorCode.PARAM_ERROR, "人数上限仅支持 10/20/30");
         }
 
-        // 3. 校验代币余额
-        User user = userMapper.selectById(userId);
-        if (user == null) {
-            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
-        }
-        if (user.getTokenBalance() == null || user.getTokenBalance() < tokenCost) {
-            throw new BusinessException(ErrorCode.TOKEN_NOT_ENOUGH);
-        }
+        // 3. 扣代币（分布式锁 + 余额校验 + 乐观锁兜底，返回更新后的用户用于后续身份解析）
+        User user = tokenBalanceHelper.deduct(userId, tokenCost);
 
-        // 4. 扣代币（乐观锁 @Version）
-        user.setTokenBalance(user.getTokenBalance() - tokenCost);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            throw new BusinessException(ErrorCode.CONFLICT, "代币扣减冲突，请重试");
-        }
-
-        // 5. 插入 campfire
+        // 4. 插入 campfire
         LocalDateTime now = LocalDateTime.now();
         Campfire campfire = new Campfire();
         campfire.setName(name);
@@ -123,14 +149,15 @@ public class CampfireServiceImpl implements CampfireService {
         campfire.setLastActiveAt(now);
         campfireMapper.insert(campfire);
 
-        // 6. 创建者自动加入
+        // 5. 创建者自动加入（默认使用昵称）
         CampfireMember member = new CampfireMember();
         member.setCampfireId(campfire.getId());
         member.setUserId(userId);
+        member.setAnonymousName(resolveIdentityName(user, campfire.getId(), "nickname"));
         member.setJoinedAt(now);
         campfireMemberMapper.insert(member);
 
-        // 7. 写流水：source='create_campfire'
+        // 6. 写流水：source='create_campfire'
         TokenTransaction tx = new TokenTransaction();
         tx.setUserId(userId);
         tx.setType("spend");
@@ -180,7 +207,7 @@ public class CampfireServiceImpl implements CampfireService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public void joinCampfire(Long userId, Long campfireId) {
+    public CampfireMemberVO joinCampfire(Long userId, Long campfireId, String displayMode) {
         Campfire campfire = campfireMapper.selectById(campfireId);
         if (campfire == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "篝火不存在");
@@ -189,28 +216,62 @@ public class CampfireServiceImpl implements CampfireService {
         if (!"active".equals(campfire.getStatus())) {
             throw new BusinessException(ErrorCode.BUSINESS_ERROR, "篝火不可加入");
         }
-        // 校验未加入（已加入则静默返回成功）
+
+        // 获取用户信息
+        User user = userMapper.selectById(userId);
+        if (user == null) {
+            throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
+        }
+
+        // 根据 displayMode 生成身份名称
+        String identityName = resolveIdentityName(user, campfireId, displayMode);
+        CampfireMember member;
+
         if (isMember(userId, campfireId)) {
-            log.info("用户已加入篝火，静默处理: userId={}, campfireId={}", userId, campfireId);
-            return;
+            // 已加入则更新身份名称（允许用户在每次进入时更换）
+            campfireMemberMapper.update(null, new LambdaUpdateWrapper<CampfireMember>()
+                    .eq(CampfireMember::getCampfireId, campfireId)
+                    .eq(CampfireMember::getUserId, userId)
+                    .set(CampfireMember::getAnonymousName, identityName));
+            // 读取更新后的成员
+            member = campfireMemberMapper.selectOne(new LambdaQueryWrapper<CampfireMember>()
+                    .eq(CampfireMember::getCampfireId, campfireId)
+                    .eq(CampfireMember::getUserId, userId));
+            log.info("用户已加入篝火，更新身份: userId={}, campfireId={}, anonymousName={}", userId, campfireId, identityName);
+        } else {
+            // 校验人数未满
+            Long memberCount = countMembers(campfireId);
+            if (campfire.getMaxMembers() != null && memberCount >= campfire.getMaxMembers()) {
+                throw new BusinessException(ErrorCode.CAMPFIRE_FULL);
+            }
+            // 插入成员
+            member = new CampfireMember();
+            member.setCampfireId(campfireId);
+            member.setUserId(userId);
+            member.setAnonymousName(identityName);
+            member.setJoinedAt(LocalDateTime.now());
+            campfireMemberMapper.insert(member);
+            log.info("加入篝火成功: userId={}, campfireId={}, anonymousName={}", userId, campfireId, identityName);
         }
-        // 校验人数未满
-        Long memberCount = countMembers(campfireId);
-        if (campfire.getMaxMembers() != null && memberCount >= campfire.getMaxMembers()) {
-            throw new BusinessException(ErrorCode.CAMPFIRE_FULL);
-        }
-        // 插入成员
-        CampfireMember member = new CampfireMember();
-        member.setCampfireId(campfireId);
-        member.setUserId(userId);
-        member.setJoinedAt(LocalDateTime.now());
-        campfireMemberMapper.insert(member);
-        
+
         // 更新最后活跃时间
         campfire.setLastActiveAt(LocalDateTime.now());
         campfireMapper.updateById(campfire);
-        
-        log.info("加入篝火成功: userId={}, campfireId={}", userId, campfireId);
+
+        // 缓存成员身份名（sendMessage 时直接读缓存，避免查 DB）
+        cacheMemberName(campfireId, userId, identityName);
+
+        return toMemberVO(member);
+    }
+
+    private CampfireMemberVO toMemberVO(CampfireMember member) {
+        CampfireMemberVO vo = new CampfireMemberVO();
+        vo.setId(member.getId());
+        vo.setCampfireId(member.getCampfireId());
+        vo.setUserId(member.getUserId());
+        vo.setAnonymousName(member.getAnonymousName());
+        vo.setJoinedAt(member.getJoinedAt());
+        return vo;
     }
 
     @Override
@@ -231,7 +292,10 @@ public class CampfireServiceImpl implements CampfireService {
         // 更新最后活跃时间
         campfire.setLastActiveAt(LocalDateTime.now());
         campfireMapper.updateById(campfire);
-        
+
+        // 清除成员身份名缓存
+        evictMemberNameCache(campfireId, userId);
+
         log.info("退出篝火成功: userId={}, campfireId={}", userId, campfireId);
     }
 
@@ -264,40 +328,78 @@ public class CampfireServiceImpl implements CampfireService {
         // 1. 校验用户非 banned
         userService.checkUserNotMuted(userId);
         // 2. 校验用户是该篝火成员
-        checkCampfireMember(userId, campfireId);
+        CampfireMember member = checkCampfireMember(userId, campfireId);
         // 3. 获取用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
-        // 4. 插入消息（anonymous_name 冗余存储）
+        // 4. 确定身份名称：优先用 Redis 缓存 → 成员的 anonymousName → fallback 生成
+        String identityName = getCachedMemberName(campfireId, userId);
+        if (identityName == null || identityName.isEmpty()) {
+            identityName = member.getAnonymousName();
+        }
+        if (identityName == null || identityName.isEmpty()) {
+            identityName = (user.getNickname() != null && !user.getNickname().isEmpty())
+                    ? user.getNickname()
+                    : AnonymousNameGenerator.generateStable(userId, campfireId);
+            // 回填到成员记录并缓存
+            campfireMemberMapper.update(null, new LambdaUpdateWrapper<CampfireMember>()
+                    .eq(CampfireMember::getId, member.getId())
+                    .set(CampfireMember::getAnonymousName, identityName));
+            cacheMemberName(campfireId, userId, identityName);
+        }
+        // 5. 插入消息
         LocalDateTime now = LocalDateTime.now();
         CampfireMessage message = new CampfireMessage();
         message.setCampfireId(campfireId);
         message.setUserId(userId);
-        message.setAnonymousName(user.getAnonymousName());
+        message.setAnonymousName(identityName);
         message.setContent(content);
         message.setCreatedAt(now);
         campfireMessageMapper.insert(message);
 
         CampfireMessageVO vo = toMessageVO(message);
 
-        // 4. 通过 WebSocket 推送到 /topic/campfire/{campfireId}
+        // 6. 通过 WebSocket 推送到 /topic/campfire/{campfireId}
         messagingTemplate.convertAndSend("/topic/campfire/" + campfireId, vo);
 
-        log.info("篝火消息发送成功: userId={}, campfireId={}, messageId={}", userId, campfireId, message.getId());
+        log.info("篝火消息发送成功: userId={}, campfireId={}, messageId={}, anonymousName={}", userId, campfireId, message.getId(), identityName);
         return vo;
     }
 
     // ==================== 私有辅助方法 ====================
 
     /**
-     * 校验当前用户是该篝火成员
+     * 校验当前用户是该篝火成员，返回成员记录
      */
-    private void checkCampfireMember(Long userId, Long campfireId) {
-        if (!isMember(userId, campfireId)) {
+    private CampfireMember checkCampfireMember(Long userId, Long campfireId) {
+        CampfireMember member = campfireMemberMapper.selectOne(
+                new LambdaQueryWrapper<CampfireMember>()
+                        .eq(CampfireMember::getCampfireId, campfireId)
+                        .eq(CampfireMember::getUserId, userId));
+        if (member == null) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "未加入该篝火");
         }
+        return member;
+    }
+
+    /**
+     * 根据 displayMode 解析身份名称
+     * - "nickname"：按 userId 查询用户 nickname
+     * - "anonymous"：同一用户+同一篝火+同一天 = 同一稳定名称
+     * - 默认：按 userId 查询用户 nickname
+     */
+    private String resolveIdentityName(User user, Long campfireId, String displayMode) {
+        if ("anonymous".equals(displayMode)) {
+            return AnonymousNameGenerator.generateStable(user.getId(), campfireId);
+        }
+        // nickname 模式或默认
+        if (user.getNickname() != null && !user.getNickname().isEmpty()) {
+            return user.getNickname();
+        }
+        // 未设置昵称，fallback 到稳定匿名
+        return AnonymousNameGenerator.generateStable(user.getId(), campfireId);
     }
 
     /**

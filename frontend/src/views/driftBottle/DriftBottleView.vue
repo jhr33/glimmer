@@ -468,6 +468,9 @@ onMounted(() => {
         </div>
 
         <div v-else v-loading="openLoading" class="bottle-content-wrap">
+          <div class="bottle-author">
+            <span class="author-name">🏷️ {{ openedBottle?.anonymousName || '匿名旅人' }}</span>
+          </div>
           <div class="bottle-content">{{ openedBottle?.content || '（空）' }}</div>
           <div class="bottle-meta">
             投放时间：{{ openedBottle?.createdAt || openedBottle?.created_at || '-' }}
@@ -517,6 +520,9 @@ onMounted(() => {
         <ul v-else class="mine-list">
           <li v-for="item in mineList" :key="item.id" class="mine-item">
             <div class="mine-item-main" @click="openMineDetail(item)">
+              <div class="mine-item-head">
+                <span class="mine-author">🏷️ {{ item.anonymousName || '匿名旅人' }}</span>
+              </div>
               <div class="mine-item-content">{{ previewContent(item.content) }}</div>
               <div class="mine-item-meta">
                 <el-tag size="small" :type="statusType(item.status)">
@@ -628,6 +634,9 @@ onMounted(() => {
 
           <ul v-else class="reply-list">
             <li v-for="r in detailReplies" :key="r.id" class="reply-item">
+              <div class="reply-header">
+                <span class="reply-author">💬 {{ r.anonymousName || '匿名旅人' }}</span>
+              </div>
               <div class="reply-content">{{ r.content }}</div>
               <div class="reply-meta">
                 <span>{{ r.createdAt || r.created_at || '-' }}</span>
@@ -780,6 +789,18 @@ onMounted(() => {
 .bottle-content-wrap {
   padding: 8px 4px;
 }
+.bottle-author {
+  margin-bottom: 8px;
+}
+.author-name {
+  display: inline-block;
+  font-size: 13px;
+  font-weight: 600;
+  color: #6b4e2e;
+  background: #fef0d8;
+  padding: 3px 10px;
+  border-radius: 12px;
+}
 .bottle-content {
   white-space: pre-wrap;
   word-break: break-word;
@@ -843,6 +864,17 @@ onMounted(() => {
 .mine-item-main:hover .mine-item-content {
   color: #e89a1a;
 }
+.mine-item-head {
+  margin-bottom: 6px;
+}
+.mine-author {
+  display: inline-block;
+  font-size: 12px;
+  color: #6b4e2e;
+  background: #fef0d8;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
 .mine-item-content {
   font-size: 14px;
   color: #303133;
@@ -901,6 +933,14 @@ onMounted(() => {
   background: #fafafa;
   border-radius: 8px;
   padding: 10px 12px;
+}
+.reply-header {
+  margin-bottom: 4px;
+}
+.reply-author {
+  font-size: 12px;
+  color: #6b4e2e;
+  font-weight: 600;
 }
 .reply-content {
   white-space: pre-wrap;

@@ -3,8 +3,8 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { ElMessage } from 'element-plus'
+import { Edit } from '@element-plus/icons-vue'
 import { signIn, getSignInStatus } from '@/api/token'
-
 const router = useRouter()
 const userStore = useUserStore()
 
@@ -17,6 +17,11 @@ const signInTriggered = ref(false)
 // 签到结果弹窗
 const signInDialogVisible = ref(false)
 const signInResult = ref(null)
+
+// 昵称编辑弹窗
+const nicknameDialogVisible = ref(false)
+const nicknameInput = ref('')
+const nicknameSubmitting = ref(false)
 
 // 萤火花园亮度等级映射（开发文档 2.7.2 节）
 function getBrightnessLevel(totalFirefly) {
@@ -65,6 +70,33 @@ const navItems = [
 
 function goNav(name) {
   router.push({ name })
+}
+
+function openNicknameDialog() {
+  nicknameInput.value = user.value.nickname || ''
+  nicknameDialogVisible.value = true
+}
+
+async function confirmNickname() {
+  const name = nicknameInput.value.trim()
+  if (!name) {
+    ElMessage.warning('请输入昵称')
+    return
+  }
+  if (name.length < 2 || name.length > 20) {
+    ElMessage.warning('昵称长度为 2-20 个字符')
+    return
+  }
+  nicknameSubmitting.value = true
+  try {
+    await userStore.updateNickname(name)
+    nicknameDialogVisible.value = false
+    ElMessage.success('昵称已更新')
+  } catch (e) {
+    // 错误已拦截
+  } finally {
+    nicknameSubmitting.value = false
+  }
 }
 
 async function doSignIn() {
@@ -121,7 +153,10 @@ onMounted(() => {
           {{ user.username?.charAt(0)?.toUpperCase() || 'U' }}
         </el-avatar>
         <div class="user-meta">
-          <h2 class="user-nickname">{{ user.nickname || user.username || '旅人' }}</h2>
+          <h2 class="user-nickname" @click="openNicknameDialog" title="点击修改昵称">
+            {{ user.nickname || user.username || '旅人' }}
+            <el-icon class="edit-icon"><Edit /></el-icon>
+          </h2>
           <div class="user-tags">
             <el-tag size="small" type="info">用户名：{{ user.username || '-' }}</el-tag>
             <el-tag size="small" type="warning">匿名：{{ user.anonymousName || '-' }}</el-tag>
@@ -169,6 +204,32 @@ onMounted(() => {
       </div>
       <template #footer>
         <el-button type="primary" @click="signInDialogVisible = false">收下奖励</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 昵称编辑弹窗 -->
+    <el-dialog
+      v-model="nicknameDialogVisible"
+      title="修改昵称"
+      width="400px"
+      center
+    >
+      <div class="nickname-edit-tip">
+        给自己取一个温暖的昵称吧 ☘️
+      </div>
+      <el-input
+        v-model="nicknameInput"
+        placeholder="输入你的昵称（2-20字）"
+        maxlength="20"
+        show-word-limit
+        size="large"
+        @keyup.enter="confirmNickname"
+      />
+      <template #footer>
+        <el-button @click="nicknameDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="nicknameSubmitting" @click="confirmNickname">
+          保存
+        </el-button>
       </template>
     </el-dialog>
 
@@ -224,6 +285,31 @@ onMounted(() => {
   margin: 0 0 8px;
   font-size: 20px;
   color: #303133;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background 0.2s ease;
+}
+.user-nickname:hover {
+  background: #fff5e6;
+  color: #f5a623;
+}
+.user-nickname:hover .edit-icon {
+  opacity: 1;
+}
+.edit-icon {
+  font-size: 14px;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+.nickname-edit-tip {
+  text-align: center;
+  color: #909399;
+  font-size: 14px;
+  margin-bottom: 20px;
 }
 .user-tags {
   display: flex;

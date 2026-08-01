@@ -21,5 +21,10 @@ public class CampfireMember {
 
     private Long userId;
 
+    /**
+     * 进入篝火时选择的身份名称（nickname 或随机 anonymousName）
+     */
+    private String anonymousName;
+
     private LocalDateTime joinedAt;
 }

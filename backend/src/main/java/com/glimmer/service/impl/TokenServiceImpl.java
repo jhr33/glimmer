@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.RedisUtils;
+import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.SignInRecord;
 import com.glimmer.entity.TokenTransaction;
 import com.glimmer.entity.User;
@@ -42,18 +44,26 @@ public class TokenServiceImpl implements TokenService {
     /** 前 7 天阈值 */
     private static final int EARLY_DAYS_THRESHOLD = 7;
 
+    /** 缓存 key：签到状态 signin:{userId}:{yyyyMMdd}，TTL 到次日 0 点 */
+    private static final String CACHE_KEY_SIGNIN = "signin:%d:%s";
+
     private final UserMapper userMapper;
     private final SignInRecordMapper signInRecordMapper;
     private final TokenTransactionMapper tokenTransactionMapper;
     private final PunishmentService punishmentService;
+    private final RedisUtils redis;
+    private final TokenBalanceHelper tokenBalanceHelper;
 
     public TokenServiceImpl(UserMapper userMapper, SignInRecordMapper signInRecordMapper,
                             TokenTransactionMapper tokenTransactionMapper,
-                            PunishmentService punishmentService) {
+                            PunishmentService punishmentService, RedisUtils redis,
+                            TokenBalanceHelper tokenBalanceHelper) {
         this.userMapper = userMapper;
         this.signInRecordMapper = signInRecordMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
         this.punishmentService = punishmentService;
+        this.redis = redis;
+        this.tokenBalanceHelper = tokenBalanceHelper;
     }
 
     @Override
@@ -77,11 +87,18 @@ public class TokenServiceImpl implements TokenService {
 
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
 
-        // 2. 预检查今日是否已签到（友好错误提示）
+        // 2. 预检查今日是否已签到（优先读 Redis 缓存，避免查 DB）
+        String signinKey = String.format(CACHE_KEY_SIGNIN, userId, today.format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE));
+        if ("1".equals(redis.get(signinKey))) {
+            throw new BusinessException(ErrorCode.ALREADY_SIGNED_IN);
+        }
+        // 缓存未命中，查 DB 兜底
         Long existCount = signInRecordMapper.selectCount(new LambdaQueryWrapper<SignInRecord>()
                 .eq(SignInRecord::getUserId, userId)
                 .eq(SignInRecord::getSignDate, today));
         if (existCount != null && existCount > 0) {
+            // DB 已签到但缓存未命中，回填缓存
+            redis.set(signinKey, "1", RedisUtils.ttlUntilEndOfDay());
             throw new BusinessException(ErrorCode.ALREADY_SIGNED_IN);
         }
 
@@ -95,14 +112,11 @@ public class TokenServiceImpl implements TokenService {
         record.setSignDate(today);
         signInRecordMapper.insert(record);
 
-        // 5. 更新用户代币余额与累计签到天数（乐观锁 @Version）
-        user.setTokenBalance(user.getTokenBalance() + reward);
-        user.setTotalSignDays(newTotalDays);
-        boolean updated = userMapper.updateById(user) > 0;
-        if (!updated) {
-            // 乐观锁冲突（极少数并发场景），uk_user_date 已保证不会重复签到
-            throw new BusinessException(ErrorCode.CONFLICT, "签到处理冲突，请重试");
-        }
+        // 5. 更新用户代币余额与累计签到天数（分布式锁 + 乐观锁兜底）
+        tokenBalanceHelper.modifyWithLock(userId, u -> {
+            u.setTokenBalance(u.getTokenBalance() + reward);
+            u.setTotalSignDays(newTotalDays);
+        });
 
         // 6. 写入代币流水（type=earn, source=sign_in, ref_id=签到记录ID）
         TokenTransaction tx = new TokenTransaction();
@@ -114,6 +128,9 @@ public class TokenServiceImpl implements TokenService {
         tokenTransactionMapper.insert(tx);
 
         log.info("用户签到成功: userId={}, reward={}, totalSignDays={}", userId, reward, newTotalDays);
+
+        // 写入签到缓存，TTL 到次日 0 点
+        redis.set(signinKey, "1", RedisUtils.ttlUntilEndOfDay());
 
         SignInResponse response = new SignInResponse();
         response.setSignedIn(true);
@@ -129,12 +146,25 @@ public class TokenServiceImpl implements TokenService {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
         LocalDate today = LocalDate.now(ZoneId.of("Asia/Shanghai"));
-        Long count = signInRecordMapper.selectCount(new LambdaQueryWrapper<SignInRecord>()
-                .eq(SignInRecord::getUserId, userId)
-                .eq(SignInRecord::getSignDate, today));
+
+        // 优先读 Redis 缓存
+        String signinKey = String.format(CACHE_KEY_SIGNIN, userId, today.format(java.time.format.DateTimeFormatter.BASIC_ISO_DATE));
+        boolean signedInToday;
+        if ("1".equals(redis.get(signinKey))) {
+            signedInToday = true;
+        } else {
+            // 缓存未命中，查 DB 并回填
+            Long count = signInRecordMapper.selectCount(new LambdaQueryWrapper<SignInRecord>()
+                    .eq(SignInRecord::getUserId, userId)
+                    .eq(SignInRecord::getSignDate, today));
+            signedInToday = count != null && count > 0;
+            if (signedInToday) {
+                redis.set(signinKey, "1", RedisUtils.ttlUntilEndOfDay());
+            }
+        }
 
         SignInStatusResponse response = new SignInStatusResponse();
-        response.setSignedInToday(count != null && count > 0);
+        response.setSignedInToday(signedInToday);
         response.setTotalSignDays(user.getTotalSignDays());
         return response;
     }
