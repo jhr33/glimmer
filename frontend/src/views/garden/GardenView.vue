@@ -67,9 +67,15 @@ function getBrightnessLevel(total) {
 }
 const brightnessLevel = computed(() => getBrightnessLevel(totalFirefly.value))
 
-const gardenBrightness = computed(() => {
-  const map = [0.25, 0.45, 0.65, 0.85, 1.0, 1.15]
-  return map[brightnessLevel.value] ?? 0.25
+// 中心亮度：萤火虫越多，遮罩中心越透明（露出背景），但保留一定遮罩使中心不过亮，边缘始终全黑
+const centerLight = computed(() => {
+  const level = brightnessLevel.value
+  if (level === 0) return 0
+  if (level === 1) return 0.15
+  if (level === 2) return 0.28
+  if (level === 3) return 0.4
+  if (level === 4) return 0.5
+  return 0.6
 })
 
 const STAGE_LABELS = {
@@ -298,11 +304,15 @@ function getFlowerStyle(f, index) {
   const id = flowerIdOf(f) ?? index
   const rx = seededRandom(id)
   const ry = seededRandom(id * 1.7 + 3)
-  const x = 8 + rx * 84
-  const y = 10 + ry * 80
+  const x = 5 + rx * 90
+  // 植物分布在花圃下方 35%~88%，模拟从远到近的透视感
+  const y = 35 + ry * 53
+  // 近处（y大）的植物略大，远处略小，制造景深
+  const scale = 0.8 + ry * 0.45
   return {
     left: `${x}%`,
     top: `${y}%`,
+    '--plant-scale': scale,
     animationDelay: `${index * 0.08}s`
   }
 }
@@ -318,11 +328,6 @@ onMounted(() => {
 
 <template>
   <div class="garden-page">
-    <!-- 萤火虫粒子层 -->
-    <div class="firefly-layer">
-      <FireflyCanvas :fireflyCount="fireflyCount" :brightnessLevel="brightnessLevel" />
-    </div>
-
     <!-- 顶部标题栏 -->
     <div class="top-bar">
       <button class="bar-btn" @click="router.push('/garden/detail')">
@@ -341,10 +346,17 @@ onMounted(() => {
     <!-- 花圃区域 -->
     <div
       class="garden-field"
-      :style="{ filter: `brightness(${gardenBrightness})` }"
       @click="handleFieldClick"
     >
       <div class="field-bg"></div>
+      <!-- 萤火虫光照层：黑暗遮罩 + 萤火虫作为光源照亮周边背景 -->
+      <div class="firefly-layer">
+        <FireflyCanvas
+          :fireflyCount="fireflyCount"
+          :brightnessLevel="brightnessLevel"
+          :centerLight="centerLight"
+        />
+      </div>
 
       <div v-if="myFlowersLoading" class="field-loading">加载中…</div>
 
@@ -366,33 +378,33 @@ onMounted(() => {
         <div class="flower-wrapper">
           <!-- seed 种子：俯视小褐色圆点 -->
           <div v-if="f?.stage === 'seed'" class="flower-seed"></div>
-          
+
           <!-- sprout 幼苗：俯视一圈嫩绿小芽 -->
           <div v-else-if="f?.stage === 'sprout'" class="flower-sprout">
             <div class="sprout-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg)` }"></div>
           </div>
-          
+
           <!-- seedling 中苗：俯视绿色叶簇莲座 -->
           <div v-else-if="f?.stage === 'seedling'" class="flower-seedling">
             <div class="seedling-leaf" v-for="i in 8" :key="i" :style="{ transform: `rotate(${i * 45}deg) translateY(-12px)` }"></div>
             <div class="seedling-center"></div>
           </div>
-          
+
           <!-- bud 花苞：俯视叶簇中央显现花苞 -->
           <div v-else-if="f?.stage === 'bud'" class="flower-bud">
             <div class="bud-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg) translateY(-16px)` }"></div>
             <div class="bud-body"></div>
           </div>
-          
+
           <!-- bloom 开放：俯视完整玫瑰植株 -->
           <div v-else class="flower-bloom">
             <!-- 外层叶片环（6片深绿椭圆叶片） -->
             <div class="leaf-ring">
-              <div class="outer-leaf" v-for="i in 6" :key="'leaf-' + i" :style="{ transform: `rotate(${i * 60}deg) translateY(-26px)` }"></div>
+              <div class="outer-leaf" v-for="i in 6" :key="'leaf-' + i" :style="{ transform: `rotate(${i * 60}deg) translateY(-20px)` }"></div>
             </div>
             <!-- 花萼层（5片较短叶片，深绿偏褐） -->
             <div class="sepal-ring">
-              <div class="sepal" v-for="i in 5" :key="'sepal-' + i" :style="{ transform: `rotate(${i * 72}deg) translateY(-18px)` }"></div>
+              <div class="sepal" v-for="i in 5" :key="'sepal-' + i" :style="{ transform: `rotate(${i * 72}deg) translateY(-14px)` }"></div>
             </div>
             <!-- 花头：俯视多层立体花瓣 -->
             <div class="flower-head">
@@ -488,7 +500,7 @@ onMounted(() => {
   height: 100vh;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, #0a0a12 0%, #0f0f1a 100%);
+  background: #000000;
   overflow: hidden;
 }
 
@@ -499,7 +511,7 @@ onMounted(() => {
   width: 100%;
   height: 100%;
   pointer-events: none;
-  z-index: 50;
+  z-index: 2;
 }
 
 .top-bar {
@@ -550,28 +562,15 @@ onMounted(() => {
   border-radius: 16px;
   overflow: hidden;
   z-index: 10;
-  transition: filter 0.6s ease;
 }
 
 .field-bg {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(circle at 15% 25%, rgba(120, 110, 100, 0.25) 3px, transparent 4px),
-    radial-gradient(circle at 75% 40%, rgba(120, 110, 100, 0.2) 2px, transparent 3px),
-    radial-gradient(circle at 40% 70%, rgba(120, 110, 100, 0.22) 3px, transparent 4px),
-    radial-gradient(circle at 85% 85%, rgba(120, 110, 100, 0.2) 2px, transparent 3px),
-    radial-gradient(circle at 25% 90%, rgba(120, 110, 100, 0.22) 3px, transparent 4px),
-    radial-gradient(circle at 60% 15%, rgba(120, 110, 100, 0.2) 2px, transparent 3px),
-    repeating-linear-gradient(
-      45deg,
-      transparent 0,
-      transparent 18px,
-      rgba(45, 80, 50, 0.15) 18px,
-      rgba(45, 80, 50, 0.15) 20px
-    ),
-    linear-gradient(135deg, #2a1f15 0%, #3d2a1a 50%, #2a1f15 100%);
-  background-size: 80px 80px, 100px 100px, 60px 60px, 90px 90px, 70px 70px, 85px 85px, auto, auto;
+  background-image: url("/images/img.png");
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
 
 .field-loading,
@@ -599,18 +598,18 @@ onMounted(() => {
   text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
 }
 
-/* 花朵花位 */
+/* 花朵花位：底部锚定，植物从位置点向上生长 */
 .flower-spot {
   position: absolute;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%) scale(var(--plant-scale, 1));
   cursor: pointer;
   z-index: 3;
   animation: spotFadeIn 0.5s ease forwards;
   opacity: 0;
 }
 @keyframes spotFadeIn {
-  from { opacity: 0; transform: translate(-50%, -40%) scale(0.6); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: translate(-50%, -40%) scale(calc(var(--plant-scale, 1) * 0.6)); }
+  to { opacity: 1; transform: translate(-50%, -50%) scale(var(--plant-scale, 1)); }
 }
 .flower-spot:hover {
   z-index: 4;
@@ -638,7 +637,7 @@ onMounted(() => {
   transition: transform 0.3s ease;
 }
 
-/* ============ 各阶段立体花朵 ============ */
+/* ============ 各阶段立体花朵（俯视） ============ */
 
 /* seed 种子：俯视小褐色圆点 */
 .flower-seed {
@@ -748,7 +747,7 @@ onMounted(() => {
     -3px 4px 8px rgba(0,0,0,0.4);
 }
 
-/* bloom 开放：俯视完整玫瑰植株 */
+/* ============ bloom 开放：俯视完整玫瑰植株 ============ */
 .flower-bloom {
   position: absolute;
   top: 50%;
@@ -778,9 +777,7 @@ onMounted(() => {
   height: 22px;
   margin-left: -6px;
   background: radial-gradient(ellipse at 30% 40%,
-    #4caf50 0%,
-    #388e3c 40%,
-    #2e7d32 100%);
+    #4caf50 0%, #388e3c 40%, #2e7d32 100%);
   border-radius: 60% 40% 55% 45% / 75% 70% 30% 25%;
   box-shadow:
     inset 2px 0 4px rgba(255,255,255,0.25),
@@ -803,9 +800,7 @@ onMounted(() => {
   height: 14px;
   margin-left: -4px;
   background: radial-gradient(ellipse at 35% 40%,
-    #5d4e37 0%,
-    #4a3728 50%,
-    #3d2f24 100%);
+    #5d4e37 0%, #4a3728 50%, #3d2f24 100%);
   border-radius: 55% 45% 60% 40% / 70% 65% 35% 30%;
   box-shadow:
     inset 1px 0 2px rgba(255,255,255,0.15),
@@ -838,9 +833,7 @@ onMounted(() => {
   margin-left: -5px;
   margin-top: -16px;
   background: radial-gradient(ellipse at 30% 35%,
-    #dc5a4c 0%,
-    #c0392b 40%,
-    #a93226 100%);
+    #dc5a4c 0%, #c0392b 40%, #a93226 100%);
   border-radius: 65% 35% 70% 30% / 80% 70% 30% 20%;
   box-shadow:
     inset 2px 1px 4px rgba(255,255,255,0.3),
@@ -855,9 +848,7 @@ onMounted(() => {
   margin-left: -4px;
   margin-top: -13px;
   background: radial-gradient(ellipse at 30% 35%,
-    #f16051 0%,
-    #e74c3c 40%,
-    #c0392b 100%);
+    #f16051 0%, #e74c3c 40%, #c0392b 100%);
   border-radius: 60% 40% 65% 35% / 75% 70% 30% 25%;
   box-shadow:
     inset 2px 1px 3px rgba(255,255,255,0.25),
@@ -872,9 +863,7 @@ onMounted(() => {
   margin-left: -3px;
   margin-top: -10px;
   background: radial-gradient(ellipse at 30% 35%,
-    #ffcccc 0%,
-    #ff6b6b 40%,
-    #e74c3c 100%);
+    #ffcccc 0%, #ff6b6b 40%, #e74c3c 100%);
   border-radius: 55% 45% 60% 40% / 70% 65% 35% 30%;
   box-shadow:
     inset 1px 0 3px rgba(255,255,255,0.3),
@@ -891,10 +880,7 @@ onMounted(() => {
   height: 6px;
   margin: -3px;
   background: radial-gradient(circle at 30% 30%,
-    #fff8e1 0%,
-    #ffecb3 40%,
-    #ffe082 70%,
-    #ffd54f 100%);
+    #fff8e1 0%, #ffecb3 40%, #ffe082 70%, #ffd54f 100%);
   border-radius: 50%;
   box-shadow:
     0 0 3px rgba(255, 215, 0, 0.5),

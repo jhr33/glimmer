@@ -7,6 +7,10 @@ const props = defineProps({
  brightnessLevel: {
  type: Number,
  default: 0
+ },
+ centerLight: {
+ type: Number,
+ default: 0
  }
 });
 const canvasRef = ref(null);
@@ -22,25 +26,37 @@ class Firefly {
  reset(canvasWidth, canvasHeight) {
  this.x = Math.random() * canvasWidth;
  this.y = Math.random() * canvasHeight;
- this.speedX = (Math.random() - 0.5) * 0.8;
- this.speedY = (Math.random() - 0.5) * 0.6;
- this.baseSpeedX = this.speedX;
- this.size = Math.random() * 3 + 2;
- this.baseAlpha = Math.random() * 0.5 + 0.3;
- this.alpha = this.baseAlpha;
- this.alphaSpeed = (Math.random() * 0.015 + 0.005) * (Math.random() > 0.5 ? 1 : -1);
- this.alphaMin = Math.random() * 0.2 + 0.1;
- this.alphaMax = Math.random() * 0.4 + 0.6;
- this.hueOffset = Math.random() * 30 - 15;
+ this.baseSize = Math.random() * 1.2 + 0.8;
+ this.size = this.baseSize;
+ this.sizePhase = Math.random() * Math.PI * 2;
+ this.sizePhaseSpeed = Math.random() * 0.03 + 0.01;
+ this.sizeAmp = Math.random() * 0.3 + 0.2;
+ this.alphaMin = Math.random() * 0.06;
+ this.alphaMax = Math.random() * 0.25 + 0.75;
+ this.alpha = this.alphaMin;
+ this.phase = Math.random() * Math.PI * 2;
+ this.phaseSpeed = (Math.random() * 0.008 + 0.004) * (Math.random() > 0.5 ? 1 : -1);
+ this.targetX = Math.random() * canvasWidth;
+ this.targetY = Math.random() * canvasHeight;
  this.sinOffset = Math.random() * Math.PI * 2;
  this.sinSpeed = Math.random() * 0.02 + 0.01;
  this.time = Math.random() * 1000;
  }
  update(canvasWidth, canvasHeight, mouseX, mouseY) {
  this.time += 0.05;
- const sinWave = Math.sin(this.time * this.sinSpeed + this.sinOffset) * 0.5;
- let dx = this.baseSpeedX + sinWave * 0.3;
- let dy = this.speedY;
+ const sinWave = Math.sin(this.time * this.sinSpeed + this.sinOffset);
+ // 朝随机目标点缓动，叠加正弦抖动，形成自然曲线轨迹
+ const tdx = this.targetX - this.x;
+ const tdy = this.targetY - this.y;
+ const tdist = Math.sqrt(tdx * tdx + tdy * tdy);
+ if (tdist < 10) {
+ this.targetX = Math.random() * canvasWidth;
+ this.targetY = Math.random() * canvasHeight;
+ }
+ const moveSpeed = 0.5;
+ let dx = (tdx / Math.max(tdist, 0.1)) * moveSpeed + sinWave * 0.25;
+ let dy = (tdy / Math.max(tdist, 0.1)) * moveSpeed * 0.7;
+ // 鼠标排斥
  const distToMouse = Math.sqrt(Math.pow(this.x - mouseX, 2) + Math.pow(this.y - mouseY, 2));
  const repelRadius = 80;
  if (distToMouse < repelRadius && distToMouse > 0) {
@@ -59,17 +75,32 @@ class Firefly {
  this.y = canvasHeight;
  if (this.y > canvasHeight)
  this.y = 0;
- this.alpha += this.alphaSpeed;
- if (this.alpha >= this.alphaMax || this.alpha <= this.alphaMin) {
- this.alphaSpeed *= -1;
+ // 脉冲式 alpha：陡升 → 维持亮 → 陡降 → 维持暗
+ this.phase += this.phaseSpeed;
+ const period = Math.PI * 2;
+ const t = ((this.phase % period) + period) % period;
+ const norm = t / period;
+ let pulse;
+ if (norm < 0.12) {
+ pulse = norm / 0.12;
+ } else if (norm < 0.42) {
+ pulse = 1;
+ } else if (norm < 0.54) {
+ pulse = 1 - (norm - 0.42) / 0.12;
+ } else {
+ pulse = 0;
  }
+ this.alpha = this.alphaMin + (this.alphaMax - this.alphaMin) * pulse;
+ // 大小渐变：随时间正弦呼吸，幅度和速度随机
+ this.sizePhase += this.sizePhaseSpeed;
+ this.size = this.baseSize * (1 + Math.sin(this.sizePhase) * this.sizeAmp);
  }
  draw(ctx) {
- const alpha = this.alpha;
+ const alpha = Math.min(1, this.alpha * 1.5);
  const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size * 3);
  gradient.addColorStop(0, `rgba(255, 255, 240, ${alpha})`);
- gradient.addColorStop(0.3, `rgba(255, 220, 100, ${alpha * 0.8})`);
- gradient.addColorStop(0.6, `rgba(255, 200, 80, ${alpha * 0.4})`);
+ gradient.addColorStop(0.3, `rgba(255, 220, 100, ${alpha * 0.85})`);
+ gradient.addColorStop(0.6, `rgba(255, 200, 80, ${alpha * 0.45})`);
  gradient.addColorStop(1, `rgba(255, 180, 60, 0)`);
  ctx.beginPath();
  ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
@@ -122,9 +153,41 @@ function initFireflies() {
 function animate() {
  if (!ctx || !canvasRef.value)
  return;
- ctx.clearRect(0, 0, canvasRef.value.width, canvasRef.value.height);
+ const canvas = canvasRef.value;
+ ctx.clearRect(0, 0, canvas.width, canvas.height);
+ // 1. 黑暗遮罩：径向渐变，中心随萤火变亮，边缘始终全黑
+ ctx.globalCompositeOperation = 'source-over';
+ const cx = canvas.width / 2;
+ const cy = canvas.height / 2;
+ const maxR = Math.sqrt(cx * cx + cy * cy);
+ const centerAlpha = Math.max(0, 1 - props.centerLight);
+ const maskGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR);
+ maskGrad.addColorStop(0, `rgba(0, 0, 0, ${centerAlpha})`);
+ maskGrad.addColorStop(0.55, `rgba(0, 0, 0, ${centerAlpha * 0.5 + 0.5})`);
+ maskGrad.addColorStop(1, 'rgba(0, 0, 0, 1)');
+ ctx.fillStyle = maskGrad;
+ ctx.fillRect(0, 0, canvas.width, canvas.height);
+ // 2. 萤火虫光照：在黑暗层上"挖洞"，露出下方背景图（萤火虫作为光源照亮周边）
+ ctx.globalCompositeOperation = 'destination-out';
  fireflies.forEach(firefly => {
- firefly.update(canvasRef.value.width, canvasRef.value.height, mouseX, mouseY);
+ firefly.update(canvas.width, canvas.height, mouseX, mouseY);
+ const lightRadius = Math.max(9, firefly.size * 6);
+ const gradient = ctx.createRadialGradient(
+ firefly.x, firefly.y, 0,
+ firefly.x, firefly.y, lightRadius
+ );
+ const lightStrength = Math.min(1, firefly.alpha * 1.4);
+ gradient.addColorStop(0, `rgba(0, 0, 0, ${lightStrength})`);
+ gradient.addColorStop(0.35, `rgba(0, 0, 0, ${lightStrength * 0.6})`);
+ gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+ ctx.beginPath();
+ ctx.arc(firefly.x, firefly.y, lightRadius, 0, Math.PI * 2);
+ ctx.fillStyle = gradient;
+ ctx.fill();
+ });
+ // 3. 萤火虫粒子本身（亮点 + 光晕）
+ ctx.globalCompositeOperation = 'source-over';
+ fireflies.forEach(firefly => {
  firefly.draw(ctx);
  });
  animationId = requestAnimationFrame(animate);
