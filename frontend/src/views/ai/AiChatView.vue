@@ -66,9 +66,9 @@ function canSend() {
   if (isBanned.value) return false
   const status = c.status
   if (status !== 'active') return false
-  // 配额校验：1轮 = 1用户消息 + 1AI回复，quotaUsed >= quotaLimit 不可发送
+  // 配额校验：token 用完不可发送
   const quotaUsed = c.quotaUsed ?? 0
-  const quotaLimit = c.quotaLimit ?? 10
+  const quotaLimit = c.quotaLimit ?? 9999
   if (quotaUsed >= quotaLimit) return false
   return true
 }
@@ -78,7 +78,7 @@ function isQuotaExhausted() {
   const c = activeConversation.value
   if (!c) return false
   const quotaUsed = c.quotaUsed ?? 0
-  const quotaLimit = c.quotaLimit ?? 10
+  const quotaLimit = c.quotaLimit ?? 9999
   return quotaUsed >= quotaLimit
 }
 
@@ -102,7 +102,7 @@ async function handleUnlock() {
     // 刷新用户代币余额
     userStore.fetchUserInfo().catch(() => {})
     unlockDialogVisible.value = false
-    ElMessage.success('已解锁 10 轮对话，继续聊聊吧～')
+    ElMessage.success('已解锁新的对话额度，继续聊聊吧～')
   } catch (e) {
     if (e?.code === 4003) {
       ElMessage.error('代币不足，无法解锁')
@@ -408,7 +408,7 @@ onUnmounted(() => {
                 {{ c.title || ('会话 #' + conversationIdOf(c)) }}
               </div>
               <div class="conv-meta">
-                <span class="meta-text">额度：{{ c.quotaUsed ?? 0 }}/{{ c.quotaLimit ?? 10 }} 轮</span>
+                <span class="meta-text">{{ c.conversationType === 'free' ? '🌙 每日免费' : '✨ 代币会话' }}</span>
               </div>
             </div>
             <el-button size="small" @click.stop="openConversation(c)">查看</el-button>
@@ -434,9 +434,8 @@ onUnmounted(() => {
       <div class="detail-header">
         <div class="ai-name">✨ glimmer</div>
         <div class="quota-display">
-          <span v-if="activeConversation?.conversationType === 'free'" class="free-tag">🌙 免费</span>
-          <span v-else class="paid-tag">✨ 付费</span>
-          <span class="quota-text">{{ activeConversation?.quotaUsed ?? 0 }}/{{ activeConversation?.quotaLimit ?? 10 }} 轮</span>
+          <span v-if="activeConversation?.conversationType === 'free'" class="free-tag">🌙 每日免费</span>
+          <span v-else class="paid-tag">✨ 代币会话</span>
         </div>
         <button class="back-btn" @click="backToList">← 返回</button>
       </div>
@@ -486,7 +485,7 @@ onUnmounted(() => {
         </template>
         <template v-else-if="isQuotaExhausted() && !isBanned">
           <el-alert
-            title="今晚已经聊了好多轮了～消耗 1 枚代币可以解锁 10 轮继续聊 🌙"
+            title="今日免费额度已用完～消耗 1 枚代币可以解锁新的对话额度 🌙"
             type="warning"
             :closable="false"
             show-icon
@@ -516,8 +515,8 @@ onUnmounted(() => {
     >
       <div class="unlock-dialog-body">
         <p class="unlock-tip">
-          今晚已经聊了 <strong>{{ activeConversation?.quotaUsed ?? 0 }}</strong> 轮了～<br>
-          消耗 1 枚代币可以解锁 10 轮继续聊 🌙
+          今日免费额度已用完～<br>
+          消耗 1 枚代币可以解锁新的对话额度继续聊 🌙
         </p>
       </div>
       <template #footer>

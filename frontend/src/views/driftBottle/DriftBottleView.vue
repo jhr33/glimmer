@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   throwBottle,
@@ -42,6 +42,56 @@ function openReportReply(reply) {
 // 场景：main 主场景 / picked 捡到瓶子 / mine 我的瓶子
 const scene = ref('main')
 
+// 被海浪推上沙滩的瓶子（点击可打开）
+const washedBottles = ref([]) // { uid, left, rotate, landed, leaving, loading }
+let spawnTimer = null
+let bottleSeq = 0
+
+function spawnBottle() {
+  if (washedBottles.value.length >= 4) return
+  const uid = ++bottleSeq
+  const left = 10 + Math.random() * 80 // 10% ~ 90%
+  const rotate = -25 + Math.random() * 50 // -25° ~ 25°
+  const bobDur = 11 + Math.random() * 4 // 11s ~ 15s 下沉-上浮-消失周期
+  const bobDelay = 0.9 + Math.random() * 0.5 // 等 bottleAppear 完成后开始
+  washedBottles.value.push({
+    uid,
+    left,
+    rotate,
+    bobDur: +bobDur.toFixed(2),
+    bobDelay: +bobDelay.toFixed(2),
+    landed: false,
+    leaving: false,
+    loading: false
+  })
+  // 进入水面后可点击
+  setTimeout(() => {
+    const b = washedBottles.value.find((x) => x.uid === uid)
+    if (b) b.landed = true
+  }, 1800)
+  // 下沉-上浮周期结束后被海浪带走
+  setTimeout(() => {
+    removeBottle(uid)
+  }, (bobDur + bobDelay) * 1000 + 500)
+}
+
+function removeBottle(uid) {
+  const b = washedBottles.value.find((x) => x.uid === uid)
+  if (!b || b.leaving) return
+  b.leaving = true
+  setTimeout(() => {
+    washedBottles.value = washedBottles.value.filter((x) => x.uid !== uid)
+  }, 1400)
+}
+
+function scheduleSpawn() {
+  const delay = 3000 + Math.random() * 3500 // 3s ~ 6.5s
+  spawnTimer = setTimeout(() => {
+    spawnBottle()
+    scheduleSpawn()
+  }, delay)
+}
+
 // 用户封禁标记（4015）
 const isBanned = ref(false)
 
@@ -49,6 +99,8 @@ const isBanned = ref(false)
 const throwVisible = ref(false)
 const throwContent = ref('')
 const throwLoading = ref(false)
+// 扔出动画
+const throwing = ref(false)
 
 // 捡到的瓶子
 const pickedBottle = ref(null) // { id, pickedAt }
@@ -153,9 +205,14 @@ async function handleThrow() {
   throwLoading.value = true
   try {
     await throwBottle({ content: throwContent.value.trim() })
-    ElMessage.success('漂流瓶已投入大海')
     throwVisible.value = false
     throwContent.value = ''
+    // 播放扔出动画
+    throwing.value = true
+    setTimeout(() => {
+      throwing.value = false
+      ElMessage.success('漂流瓶已投入大海')
+    }, 1800)
   } catch (e) {
     handleBanned(e)
   } finally {
@@ -184,10 +241,65 @@ async function handlePick() {
     openedBottle.value = null
     opened.value = false
     scene.value = 'picked'
+    // 直接拉取内容并打开
+    openLoading.value = true
+    try {
+      const res2 = await getBottle(pickedBottle.value.id)
+      openedBottle.value = res2.data
+      opened.value = true
+    } catch (e) {
+      handleBanned(e)
+    } finally {
+      openLoading.value = false
+    }
   } catch (e) {
     handleBanned(e)
   } finally {
     pickLoading.value = false
+  }
+}
+
+// 点击被推上岸的瓶子：捡起并直接打开
+async function openWashedBottle(bottle) {
+  if (isBanned.value) {
+    ElMessage.error('账号已被封禁，无法操作')
+    return
+  }
+  if (!bottle.landed || bottle.loading || bottle.leaving) return
+  bottle.loading = true
+  pickLoading.value = true
+  try {
+    const res = await pickBottle()
+    const data = res.data
+    if (!data || !data.found || !data.bottle) {
+      ElMessage.info('大海暂时没有瓶子了')
+      removeBottle(bottle.uid)
+      return
+    }
+    const bk = data.bottle
+    pickedBottle.value = {
+      id: bottleIdOf(bk),
+      pickedAt: bk.createdAt || bk.created_at || '-'
+    }
+    openedBottle.value = null
+    opened.value = false
+    scene.value = 'picked'
+    openLoading.value = true
+    try {
+      const res2 = await getBottle(pickedBottle.value.id)
+      openedBottle.value = res2.data
+      opened.value = true
+    } catch (e) {
+      handleBanned(e)
+    } finally {
+      openLoading.value = false
+    }
+    removeBottle(bottle.uid)
+  } catch (e) {
+    handleBanned(e)
+  } finally {
+    pickLoading.value = false
+    bottle.loading = false
   }
 }
 
@@ -400,44 +512,134 @@ watch(() => userStore.userInfo?.status, () => {
 onMounted(() => {
   // 进入页面时同步封禁状态
   isBanned.value = userStore.userInfo?.status === 'banned'
+  // 启动瓶子生成定时器
+  scheduleSpawn()
+  // 首个瓶子尽快出现
+  setTimeout(spawnBottle, 600)
+})
+
+onUnmounted(() => {
+  if (spawnTimer) {
+    clearTimeout(spawnTimer)
+    spawnTimer = null
+  }
 })
 </script>
 
 <template>
   <div class="drift-bottle-page">
-    <!-- 主场景 -->
+    <!-- 主场景：海浪沙滩（全屏） -->
     <div v-if="scene === 'main'" class="ocean-scene">
-      <div class="ocean-bg">
-        <div class="ocean-title">🌊 漂流瓶</div>
-        <p class="ocean-desc">把心事装入瓶中，让海浪带它去远方</p>
-        <div class="ocean-actions">
-          <el-button
-            size="large"
-            round
-            :disabled="isBanned"
-            @click="openThrowDialog"
-          >
-            ✍️ 扔漂流瓶
-          </el-button>
-          <el-button
-            size="large"
-            round
-            type="primary"
-            :loading="pickLoading"
-            :disabled="isBanned"
-            @click="handlePick"
-          >
-            🤚 捡漂流瓶
-          </el-button>
-          <el-button
-            size="large"
-            round
-            @click="goMine"
-          >
-            📦 我的瓶子
-          </el-button>
+      <!-- 天空 -->
+      <div class="sky">
+        <div class="sun"></div>
+        <div class="cloud cloud-1"></div>
+        <div class="cloud cloud-2"></div>
+      </div>
+      <!-- 海洋 -->
+      <div class="sea">
+        <!-- 海面泡沫粒子 -->
+        <div class="wave-crest wave-crest-1"></div>
+        <div class="wave-crest wave-crest-2"></div>
+        <div class="wave-crest wave-crest-3"></div>
+      </div>
+      <!-- 海面上的漂流瓶（与 sea / beach 平级） -->
+      <div
+        v-for="b in washedBottles"
+        :key="b.uid"
+        class="washed-bottle"
+        :class="{ landed: b.landed, leaving: b.leaving, loading: b.loading }"
+        :style="{ left: b.left + '%', '--rot': b.rotate + 'deg', '--bob-dur': b.bobDur + 's', '--bob-delay': b.bobDelay + 's' }"
+        @click="openWashedBottle(b)"
+      >
+        <div class="bottle-bob">
+          <div class="bottle-visual">🍾</div>
         </div>
-        <div v-if="isBanned" class="banned-tip">账号已被封禁，暂无法投放或捡瓶子</div>
+      </div>
+      <!-- 海滩波浪（浅白色，顶部水平，波浪线朝下凸起） -->
+      <div class="break-wave">
+        <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="waveGrad1" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="rgba(13,148,136,0.45)" />
+              <stop offset="20%" stop-color="rgba(125,200,230,0.55)" />
+              <stop offset="50%" stop-color="rgba(220,250,255,0.6)" />
+              <stop offset="78%" stop-color="rgba(248,252,254,0.92)" />
+              <stop offset="100%" stop-color="rgba(255,255,255,1)" />
+            </linearGradient>
+          </defs>
+          <path class="wave-path" fill="url(#waveGrad1)" d="M0,0 L1440,0 L1440,80 C1320,55 1200,35 1080,50 C960,65 840,30 720,45 C600,60 480,30 360,40 C240,50 120,65 0,50 Z" />
+        </svg>
+      </div>
+      <div class="break-wave break-wave-2">
+        <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="waveGrad2" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="rgba(28,207,176,0.4)" />
+              <stop offset="20%" stop-color="rgba(130,205,230,0.5)" />
+              <stop offset="50%" stop-color="rgba(210,245,250,0.55)" />
+              <stop offset="78%" stop-color="rgba(248,252,254,0.85)" />
+              <stop offset="100%" stop-color="rgba(255,255,255,0.95)" />
+            </linearGradient>
+          </defs>
+          <path class="wave-path" fill="url(#waveGrad2)" d="M0,0 L1440,0 L1440,80 C1300,60 1160,40 1020,55 C880,70 740,35 600,50 C460,65 320,35 180,50 C100,58 40,52 0,48 Z" />
+        </svg>
+      </div>
+      <div class="break-wave break-wave-3">
+        <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="waveGrad3" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="rgba(45,212,191,0.3)" />
+              <stop offset="20%" stop-color="rgba(140,210,230,0.4)" />
+              <stop offset="50%" stop-color="rgba(200,240,245,0.45)" />
+              <stop offset="78%" stop-color="rgba(248,252,254,0.78)" />
+              <stop offset="100%" stop-color="rgba(255,255,255,0.9)" />
+            </linearGradient>
+          </defs>
+          <path class="wave-path" fill="url(#waveGrad3)" d="M0,0 L1440,0 L1440,80 C1350,48 1220,32 1100,52 C980,72 860,32 740,42 C620,52 500,72 380,38 C260,4 140,56 0,40 Z" />
+        </svg>
+      </div>
+      <!-- 沙滩 -->
+      <div class="beach">
+        <!-- 沙滩纹理 -->
+        <div class="beach-texture"></div>
+        <!-- 沙滩操作区 -->
+        <div class="beach-inner">
+          <div class="ocean-title">🌊 漂流瓶</div>
+          <p class="ocean-desc">把心事装入瓶中，让海浪带它去远方 · 点击被推上岸的瓶子打开</p>
+          <div class="ocean-actions">
+            <el-button
+              size="large"
+              round
+              :disabled="isBanned"
+              @click="openThrowDialog"
+            >
+              ✍️ 投漂流瓶
+            </el-button>
+            <el-button
+              size="large"
+              round
+              type="primary"
+              :loading="pickLoading"
+              :disabled="isBanned"
+              @click="handlePick"
+            >
+              🤚 捡漂流瓶
+            </el-button>
+            <el-button
+              size="large"
+              round
+              @click="goMine"
+            >
+              📦 我的瓶子
+            </el-button>
+          </div>
+          <div v-if="isBanned" class="banned-tip">账号已被封禁，暂无法投放或捡瓶子</div>
+        </div>
+      </div>
+      <!-- 扔出动画瓶子 -->
+      <div v-if="throwing" class="throwing-bottle">
+        <div class="bottle-visual">🍾</div>
       </div>
     </div>
 
@@ -714,35 +916,305 @@ onMounted(() => {
 
 <style scoped>
 .drift-bottle-page {
-  min-height: 60vh;
+  /* 主场景全屏；其它场景自带内边距 */
 }
 
-/* 主场景：海洋感大色块 */
+/* === 主场景：海浪沙滩（全屏） === */
 .ocean-scene {
-  border-radius: 12px;
+  position: relative;
+  width: 100%;
+  height: calc(100vh - 60px);
+  min-height: 520px;
   overflow: hidden;
+  background: linear-gradient(180deg, #040820 0%, #0a1438 18%, #102454 32%, #0a3a6b 58%, #062a4a 76%, #031a30 100%);
 }
-.ocean-bg {
-  background: linear-gradient(160deg, #4facfe 0%, #00c6fb 50%, #2f80ed 100%);
-  color: #fff;
-  padding: 60px 24px;
+/* 天空（夜空 + 繁星） */
+.sky {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 38%;
+  overflow: hidden;
+  background:
+    radial-gradient(ellipse at 30% 20%, rgba(80, 60, 140, 0.45) 0%, transparent 55%),
+    radial-gradient(ellipse at 70% 25%, rgba(40, 80, 140, 0.4) 0%, transparent 60%),
+    linear-gradient(180deg, #040820 0%, #0a1438 55%, #102454 95%, rgba(16, 36, 84, 0) 100%);
+}
+/* 繁星：三层不同大小的星点 */
+.sky::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 28% 8%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 45% 22%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 62% 12%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 80% 20%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 92% 6%, #ffffff 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 20% 30%, #fff9d4 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 55% 28%, #cfe2ff 50%, transparent 51%),
+    radial-gradient(1.5px 1.5px at 78% 32%, #fff9d4 50%, transparent 51%),
+    radial-gradient(1px 1px at 5% 40%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 38% 38%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 68% 42%, #ffffff 50%, transparent 51%),
+    radial-gradient(1px 1px at 88% 38%, #ffffff 50%, transparent 51%),
+    radial-gradient(2px 2px at 15% 28%, #fff 50%, transparent 51%),
+    radial-gradient(2px 2px at 72% 18%, #ffe49f 50%, transparent 51%);
+  animation: starTwinkle 4s ease-in-out infinite;
+}
+.sky::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 8% 24%, rgba(255,255,255,0.8) 50%, transparent 51%),
+    radial-gradient(1px 1px at 35% 14%, rgba(255,255,255,0.7) 50%, transparent 51%),
+    radial-gradient(1px 1px at 58% 24%, rgba(255,255,255,0.85) 50%, transparent 51%),
+    radial-gradient(1px 1px at 85% 10%, rgba(255,255,255,0.75) 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 22% 36%, #fff 50%, transparent 51%),
+    radial-gradient(1.2px 1.2px at 65% 34%, #cfe2ff 50%, transparent 51%);
+  animation: starTwinkle 5.5s ease-in-out infinite reverse;
+}
+@keyframes starTwinkle {
+  0%, 100% { opacity: 0.85; }
+  50% { opacity: 0.45; }
+}
+/* 月亮 */
+.sun {
+  position: absolute;
+  top: 14%;
+  right: 12%;
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #fff9e0 0%, #f5e8b0 55%, #d8c070 100%);
+  box-shadow:
+    0 0 40px 16px rgba(255, 240, 180, 0.35),
+    0 0 80px 30px rgba(255, 220, 140, 0.18);
+  z-index: 1;
+}
+.cloud {
+  position: absolute;
+  background: rgba(200, 215, 240, 0.25);
+  border-radius: 50px;
+  filter: blur(3px);
+}
+.cloud-1 {
+  top: 22%;
+  left: -12%;
+  width: 140px;
+  height: 16px;
+  animation: cloudDrift 90s linear infinite;
+}
+.cloud-2 {
+  top: 12%;
+  left: 55%;
+  width: 100px;
+  height: 12px;
+  opacity: 0.6;
+  animation: cloudDrift 120s linear infinite;
+  animation-delay: -40s;
+}
+@keyframes cloudDrift {
+  from { transform: translateX(0); }
+  to { transform: translateX(1200px); }
+}
+/* 海洋 */
+.sea {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 74%;
+  background: linear-gradient(180deg, #051530 0%, #0a2e5c 15%, #1a5fb4 40%, #0d9488 72%, #1ccfb0 86%, #2dd4bf 100%);
+  overflow: hidden;
+  z-index: 2;
+}
+/* 天海交界处：渐变模糊带 */
+.sea::before {
+  content: '';
+  position: absolute;
+  top: -10%;
+  left: 0; right: 0;
+  height: 22%;
+  background: linear-gradient(180deg,
+    rgba(16, 36, 84, 0) 0%,
+    rgba(16, 36, 84, 0.55) 45%,
+    rgba(10, 46, 92, 0.82) 100%);
+  filter: blur(14px);
+  pointer-events: none;
+  z-index: 3;
+}
+/* 海面泡沫粒子（从远海向沙滩漂移） */
+.wave-crest {
+  position: absolute;
+  left: -120px;
+  width: calc(100% + 240px);
+  background-repeat: repeat;
+  pointer-events: none;
+}
+.wave-crest-1 {
+  top: 10%;
+  height: 30%;
+  background-image:
+    radial-gradient(circle at 12px 14px, rgba(255,255,255,0.85) 1.3px, transparent 2.2px),
+    radial-gradient(circle at 34px 30px, rgba(255,255,255,0.6) 1px, transparent 1.8px),
+    radial-gradient(circle at 52px 10px, rgba(255,255,255,0.5) 1.5px, transparent 2.6px);
+  background-size: 64px 64px;
+  animation: foamDrift1 18s linear infinite;
+}
+.wave-crest-2 {
+  top: 35%;
+  height: 32%;
+  opacity: 0.85;
+  background-image:
+    radial-gradient(circle at 8px 22px, rgba(255,255,255,0.7) 1.1px, transparent 2px),
+    radial-gradient(circle at 40px 12px, rgba(255,255,255,0.55) 1.4px, transparent 2.4px),
+    radial-gradient(circle at 70px 30px, rgba(255,255,255,0.45) 1px, transparent 1.8px);
+  background-size: 82px 82px;
+  animation: foamDrift2 26s linear infinite reverse;
+}
+.wave-crest-3 {
+  top: 60%;
+  height: 28%;
+  opacity: 0.7;
+  background-image:
+    radial-gradient(circle at 18px 18px, rgba(255,255,255,0.8) 1.5px, transparent 2.6px),
+    radial-gradient(circle at 50px 34px, rgba(255,255,255,0.5) 1.1px, transparent 2px),
+    radial-gradient(circle at 80px 12px, rgba(255,255,255,0.4) 1.3px, transparent 2.2px);
+  background-size: 100px 100px;
+  animation: foamDrift3 34s linear infinite;
+}
+@keyframes foamDrift1 {
+  from { transform: translate(0, 0); }
+  to { transform: translate(80px, -110px); }
+}
+@keyframes foamDrift2 {
+  from { transform: translate(0, 0); }
+  to { transform: translate(-90px, -120px); }
+}
+@keyframes foamDrift3 {
+  from { transform: translate(0, 0); }
+  to { transform: translate(110px, -140px); }
+}
+/* 海滩波浪（浅白色，向下凸起，起伏进退） */
+.break-wave {
+  position: absolute;
+  bottom: 16%;
+  left: 0;
+  width: 100%;
+  height: 80px;
+  z-index: 10;
+  pointer-events: none;
+  overflow: visible;
+}
+.wave-svg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 80px;
+  overflow: visible;
+}
+.wave-path {
+  /* fill 由 SVG 内联 linearGradient 提供，顶部白色泡沫→底部青绿融入海水 */
+}
+/* 第二层（更远，更小） */
+.break-wave-2 {
+  bottom: 16%;
+  z-index: 9;
+  height: 72px;
+  opacity: 0.75;
+}
+/* 第三层（最远，最小，最透） */
+.break-wave-3 {
+  bottom: 16%;
+  z-index: 8;
+  height: 64px;
+  opacity: 0.55;
+}
+/* 进退动画：波浪从上方向下涌向沙滩，再退回 */
+@keyframes breakWaveSurge {
+  0% { transform: translateY(-6px) scaleX(1); }
+  50% { transform: translateY(16px) scaleX(1.03); }
+  100% { transform: translateY(-6px) scaleX(1); }
+}
+@keyframes breakWaveSurge2 {
+  0% { transform: translateY(-4px) scaleX(0.98); }
+  50% { transform: translateY(14px) scaleX(1.02); }
+  100% { transform: translateY(-4px) scaleX(0.98); }
+}
+@keyframes breakWaveSurge3 {
+  0% { transform: translateY(-3px) scaleX(1); }
+  50% { transform: translateY(12px) scaleX(1.015); }
+  100% { transform: translateY(-3px) scaleX(1); }
+}
+.break-wave {
+  animation: breakWaveSurge 4s ease-in-out infinite;
+}
+.break-wave-2 {
+  animation: breakWaveSurge2 5.5s ease-in-out infinite;
+  animation-delay: -1.8s;
+}
+.break-wave-3 {
+  animation: breakWaveSurge3 7s ease-in-out infinite;
+  animation-delay: -3.2s;
+}
+/* 沙滩 */
+.beach {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  z-index: 5;
+  height: 22%;
+  min-height: 130px;
+  background: linear-gradient(180deg, rgba(245,225,180,0) 0%, #f5e1b4 18%, #e8c98a 50%, #d4ad6a 100%);
+  box-shadow: 0 -8px 24px rgba(0,0,0,0.12);
+}
+/* 海沙交界处：模糊过渡带（青绿→沙色） */
+.beach::before {
+  content: '';
+  position: absolute;
+  top: -12%;
+  left: 0; right: 0;
+  height: 28%;
+  background: linear-gradient(180deg,
+    rgba(45, 212, 191, 0) 0%,
+    rgba(45, 212, 191, 0.35) 35%,
+    rgba(245, 225, 180, 0.55) 70%,
+    rgba(245, 225, 180, 0) 100%);
+  filter: blur(16px);
+  pointer-events: none;
+  z-index: 6;
+}
+.beach-texture {
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(circle at 20% 70%, rgba(180,140,80,0.25) 1px, transparent 2px),
+    radial-gradient(circle at 60% 85%, rgba(180,140,80,0.2) 1px, transparent 2px),
+    radial-gradient(circle at 80% 60%, rgba(180,140,80,0.22) 1px, transparent 2px),
+    radial-gradient(circle at 35% 90%, rgba(180,140,80,0.18) 1px, transparent 2px);
+  background-size: 40px 40px, 55px 55px, 35px 35px, 50px 50px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+.beach-inner {
+  position: relative;
   text-align: center;
-  min-height: 380px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
+  color: #5a4020;
+  padding: 22px 24px 28px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 .ocean-title {
-  font-size: 32px;
+  font-size: 30px;
   font-weight: bold;
   letter-spacing: 2px;
+  color: #fff;
+  text-shadow: 0 0 16px rgba(180, 210, 255, 0.6), 0 2px 8px rgba(0, 0, 0, 0.55);
 }
 .ocean-desc {
   font-size: 14px;
-  opacity: 0.9;
-  margin-bottom: 12px;
+  margin: 8px 0 16px;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
 .ocean-actions {
   display: flex;
@@ -750,18 +1222,178 @@ onMounted(() => {
   gap: 16px;
   justify-content: center;
 }
+/* 图标发光描边 + 文字阴影 */
+.ocean-actions :deep(.el-button) {
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.ocean-actions :deep(.el-button span) {
+  text-shadow: 0 0 10px rgba(255, 235, 150, 0.85), 0 0 4px rgba(255, 255, 255, 0.6);
+}
 .banned-tip {
   margin-top: 12px;
   font-size: 13px;
   background: rgba(245, 108, 108, 0.85);
+  color: #fff;
   padding: 6px 14px;
   border-radius: 16px;
+  display: inline-block;
+}
+
+/* 被推上岸的瓶子 */
+.washed-bottle {
+  position: absolute;
+  bottom: 26%;
+  z-index: 15;
+  cursor: pointer;
+  transform: translateX(-50%);
+  animation: bottleAppear 0.9s ease-out forwards;
+  filter: drop-shadow(0 4px 8px rgba(0, 0, 0, 0.3));
+  user-select: none;
+  --bob-dur: 14s;
+  --bob-delay: 0s;
+}
+.washed-bottle:not(.landed) {
+  pointer-events: none;
+}
+.bottle-bob {
+  display: inline-block;
+  animation: bottleFloat var(--bob-dur) linear forwards;
+  animation-delay: var(--bob-delay);
+  transform-origin: 50% 100%;
+}
+.bottle-visual {
+  position: relative;
+  display: inline-block;
+  width: 13px;
+  height: 19px;
+  font-size: 0;            /* 隐藏占位 emoji，瓶身由 CSS 绘制 */
+  background: rgba(120, 200, 230, 0.18);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 0.5px solid rgba(255, 255, 255, 0.65);
+  border-radius: 3px 3px 6px 6px;
+  box-shadow:
+    inset 0 0 4px rgba(255, 255, 255, 0.45),
+    inset 0 -3px 5px rgba(120, 180, 220, 0.28),
+    0 2px 6px rgba(0, 0, 0, 0.25);
+  transform: rotate(var(--rot, 0deg));
+  transition: transform 0.25s ease, filter 0.25s ease, box-shadow 0.25s ease;
+}
+/* 瓶颈 + 软木塞 */
+.bottle-visual::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 5px;
+  height: 6px;
+  border: 0.5px solid rgba(255, 255, 255, 0.65);
+  border-radius: 1px 1px 0 0;
+  background: linear-gradient(180deg,
+    #c08552 0%, #c08552 38%,
+    rgba(120, 200, 230, 0.22) 38%, rgba(120, 200, 230, 0.22) 100%);
+  box-shadow: inset 0 0 2px rgba(255, 255, 255, 0.35);
+}
+/* 高光斜条纹 */
+.bottle-visual::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 3px 3px 6px 6px;
+  background: repeating-linear-gradient(
+    135deg,
+    rgba(255, 255, 255, 0.35) 0px,
+    rgba(255, 255, 255, 0.35) 0.6px,
+    transparent 0.6px,
+    transparent 3px
+  );
+  pointer-events: none;
+}
+.washed-bottle.landed:hover {
+  filter: drop-shadow(0 0 14px rgba(255, 235, 120, 0.95));
+}
+.washed-bottle.landed:hover .bottle-visual {
+  transform: rotate(var(--rot, 0deg)) scale(1.2);
+}
+.washed-bottle.loading {
+  pointer-events: none;
+}
+.washed-bottle.loading .bottle-visual {
+  opacity: 0.6;
+  animation: bottleShake 0.4s ease-in-out infinite;
+}
+.washed-bottle.leaving {
+  animation: bottleWashBack 1.4s ease-in forwards;
+  pointer-events: none;
+}
+@keyframes bottleAppear {
+  0% { transform: translateX(-50%) translateY(14px); opacity: 0; }
+  100% { transform: translateX(-50%) translateY(0); opacity: 1; }
+}
+@keyframes bottleWashBack {
+  0% { transform: translateX(-50%) translateY(0); opacity: 1; }
+  100% { transform: translateX(-50%) translateY(30px); opacity: 0; }
+}
+@keyframes bottleFloat {
+  0% { transform: translateY(0) rotate(0deg); opacity: 1; animation-timing-function: ease-out; }
+  28% { transform: translateY(55px) rotate(6deg); opacity: 1; animation-timing-function: linear; }
+  38% { transform: translateY(55px) rotate(6deg); opacity: 1; animation-timing-function: ease-in; }
+  60% { transform: translateY(15px) rotate(2deg); opacity: 1; animation-timing-function: linear; }
+  90% { transform: translateY(0) rotate(0deg); opacity: 1; animation-timing-function: linear; }
+  100% { transform: translateY(0) rotate(0deg); opacity: 0; }
+}
+@keyframes bottleShake {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-8deg); }
+  75% { transform: rotate(8deg); }
+}
+
+/* 扔出动画瓶子 */
+.throwing-bottle {
+  position: absolute;
+  bottom: 10%;
+  left: 50%;
+  z-index: 11;
+  font-size: 42px;
+  animation: throwArc 1.8s cubic-bezier(0.3, 0.7, 0.6, 1) forwards;
+  filter: drop-shadow(0 6px 8px rgba(0,0,0,0.3));
+}
+@keyframes throwArc {
+  0% {
+    bottom: 8%;
+    left: 50%;
+    transform: translateX(-50%) rotate(0deg) scale(0.8);
+    opacity: 0;
+  }
+  15% {
+    opacity: 1;
+    transform: translateX(-50%) rotate(-25deg) scale(1);
+  }
+  50% {
+    bottom: 60%;
+    left: 58%;
+    transform: translateX(-50%) rotate(180deg) scale(1);
+  }
+  85% {
+    bottom: 40%;
+    left: 72%;
+    opacity: 1;
+    transform: translateX(-50%) rotate(360deg) scale(0.9);
+  }
+  100% {
+    bottom: 30%;
+    left: 82%;
+    opacity: 0;
+    transform: translateX(-50%) rotate(540deg) scale(0.7);
+  }
 }
 
 /* 捡到瓶子场景 */
 .picked-scene {
   max-width: 640px;
   margin: 0 auto;
+  padding: 24px 20px;
 }
 .picked-card {
   border-radius: 12px;
@@ -827,6 +1459,11 @@ onMounted(() => {
 }
 
 /* 我的瓶子 */
+.mine-scene {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px 20px;
+}
 .mine-header {
   display: flex;
   align-items: center;

@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.BannedWordFilterService;
 import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.DriftBottle;
 import com.glimmer.entity.DriftBottlePickRecord;
@@ -57,6 +58,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     private final UserService userService;
     private final ReportMapper reportMapper;
     private final TokenBalanceHelper tokenBalanceHelper;
+    private final BannedWordFilterService bannedWordFilterService;
 
     public DriftBottleServiceImpl(DriftBottleMapper driftBottleMapper,
                                   DriftBottleReplyMapper driftBottleReplyMapper,
@@ -67,7 +69,8 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                                   NotificationService notificationService,
                                   UserService userService,
                                   ReportMapper reportMapper,
-                                  TokenBalanceHelper tokenBalanceHelper) {
+                                  TokenBalanceHelper tokenBalanceHelper,
+                                  BannedWordFilterService bannedWordFilterService) {
         this.driftBottleMapper = driftBottleMapper;
         this.driftBottleReplyMapper = driftBottleReplyMapper;
         this.driftBottlePickRecordMapper = driftBottlePickRecordMapper;
@@ -78,12 +81,14 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         this.userService = userService;
         this.reportMapper = reportMapper;
         this.tokenBalanceHelper = tokenBalanceHelper;
+        this.bannedWordFilterService = bannedWordFilterService;
     }
 
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void throwBottle(Long userId, String content) {
         userService.checkUserNotMuted(userId);
+        bannedWordFilterService.check(content, "throwBottle");
         DriftBottle bottle = new DriftBottle();
         bottle.setUserId(userId);
         bottle.setContent(content);
@@ -175,6 +180,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     @Transactional(rollbackFor = Exception.class)
     public void replyBottle(Long userId, Long bottleId, String content) {
         userService.checkUserNotMuted(userId);
+        bannedWordFilterService.check(content, "replyBottle");
         checkPicked(userId, bottleId);
 
         DriftBottleReply reply = new DriftBottleReply();

@@ -7,6 +7,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.BannedWordFilterService;
 import com.glimmer.common.util.RedisUtils;
 import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.Campfire;
@@ -63,6 +64,7 @@ public class CampfireServiceImpl implements CampfireService {
     private final ReportMapper reportMapper;
     private final RedisUtils redis;
     private final TokenBalanceHelper tokenBalanceHelper;
+    private final BannedWordFilterService bannedWordFilterService;
 
     public CampfireServiceImpl(CampfireMapper campfireMapper,
                                CampfireMemberMapper campfireMemberMapper,
@@ -73,7 +75,8 @@ public class CampfireServiceImpl implements CampfireService {
                                UserService userService,
                                ReportMapper reportMapper,
                                RedisUtils redis,
-                               TokenBalanceHelper tokenBalanceHelper) {
+                               TokenBalanceHelper tokenBalanceHelper,
+                               BannedWordFilterService bannedWordFilterService) {
         this.campfireMapper = campfireMapper;
         this.campfireMemberMapper = campfireMemberMapper;
         this.campfireMessageMapper = campfireMessageMapper;
@@ -84,6 +87,7 @@ public class CampfireServiceImpl implements CampfireService {
         this.reportMapper = reportMapper;
         this.redis = redis;
         this.tokenBalanceHelper = tokenBalanceHelper;
+        this.bannedWordFilterService = bannedWordFilterService;
     }
 
     /**
@@ -127,6 +131,8 @@ public class CampfireServiceImpl implements CampfireService {
     public CampfireVO createCampfire(Long userId, String name, int maxMembers) {
         // 1. 校验用户非 banned
         userService.checkUserNotMuted(userId);
+        // 2. 违禁词检测
+        bannedWordFilterService.check(name, "createCampfire");
 
         // 2. 校验 maxMembers ∈ {10, 20, 30}
         Integer tokenCost = MAX_MEMBERS_TOKEN_COST.get(maxMembers);
@@ -327,6 +333,8 @@ public class CampfireServiceImpl implements CampfireService {
     public CampfireMessageVO sendMessage(Long userId, Long campfireId, String content) {
         // 1. 校验用户非 banned
         userService.checkUserNotMuted(userId);
+        // 2. 违禁词检测
+        bannedWordFilterService.check(content, "campfireMessage");
         // 2. 校验用户是该篝火成员
         CampfireMember member = checkCampfireMember(userId, campfireId);
         // 3. 获取用户信息

@@ -37,6 +37,7 @@ const menuItems = computed(() => {
 
 const activeMenu = computed(() => route.path)
 const isCampfire = computed(() => route.path === '/campfire')
+const isDriftBottle = computed(() => route.path === '/driftBottle')
 
 function handleSelect(index) {
   router.push(index)
@@ -151,7 +152,7 @@ onUnmounted(() => {
       </div>
     </el-header>
 
-    <el-main :class="['app-main', isCampfire ? 'campfire-main' : '']">
+    <el-main :class="['app-main', isCampfire ? 'campfire-main' : '', isDriftBottle ? 'drift-bottle-main' : '']">
       <router-view />
     </el-main>
   </el-container>
@@ -238,6 +239,10 @@ onUnmounted(() => {
   box-sizing: border-box;
 }
 .campfire-main {
+  max-width: none;
+  padding: 0;
+}
+.drift-bottle-main {
   max-width: none;
   padding: 0;
 }

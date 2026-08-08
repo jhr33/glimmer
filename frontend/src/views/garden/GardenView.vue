@@ -42,13 +42,11 @@ function getFlowerTypeById(typeId) {
 
 function calculateFireflyCount(total) {
   const v = Number(total) || 0
-  if (v === 0) return 0
-  if (v <= 5) return Math.floor(Math.random() * 4) + 5
-  if (v <= 15) return Math.floor(Math.random() * 6) + 15
-  if (v <= 30) return Math.floor(Math.random() * 11) + 30
-  if (v <= 50) return Math.floor(Math.random() * 21) + 50
-  if (v <= 100) return Math.floor(Math.random() * 41) + 80
-  return Math.floor(Math.random() * 51) + 150
+  if (v <= 20) {
+    return Math.max(0, v)
+  }
+  const extra = Math.floor((v - 20) / 3)
+  return Math.min(20 + extra, 100)
 }
 const fireflyCount = ref(calculateFireflyCount(totalFirefly.value))
 import { watch } from 'vue'
@@ -99,6 +97,42 @@ function getFlowerType(f) {
   if (nested) return nested
   const typeId = f?.flowerTypeId ?? f?.flower_type_id
   return getFlowerTypeById(typeId)
+}
+
+const STAGE_ICON_KEYS = {
+  seed: ['iconSeed', 'icon_seed'],
+  sprout: ['iconSprout', 'icon_sprout'],
+  seedling: ['iconSeedling', 'icon_seedling'],
+  bud: ['iconBud', 'icon_bud'],
+  bloom: ['iconBloom', 'icon_bloom']
+}
+
+// 获取当前阶段的图标URL（如果花种配置了图标则用图片，否则用CSS动画）
+function getStageIconUrl(f) {
+  const ft = getFlowerType(f)
+  if (!ft) return ''
+  const stage = f?.stage
+  const keys = STAGE_ICON_KEYS[stage]
+  if (!keys) return ''
+  return ft[keys[0]] || ft[keys[1]] || ''
+}
+
+// 图片加载失败的花ID集合，用于回退到CSS动画
+const imgErrorIds = ref(new Set())
+
+// 是否使用图片图标（玫瑰等有图标的花种用图片，异世之花用CSS动画）
+function useImageIcon(f) {
+  const id = flowerIdOf(f)
+  if (id != null && imgErrorIds.value.has(id)) return false
+  return !!getStageIconUrl(f)
+}
+
+function onFlowerImgError(f, e) {
+  const id = flowerIdOf(f)
+  if (id != null) {
+    imgErrorIds.value = new Set([...imgErrorIds.value, id])
+  }
+  e.target.style.display = 'none'
 }
 
 function getStageWaterCount(f) {
@@ -376,48 +410,60 @@ onMounted(() => {
         @click.stop="(e) => handleFlowerClick(e, f)"
       >
         <div class="flower-wrapper">
-          <!-- seed 种子：俯视小褐色圆点 -->
-          <div v-if="f?.stage === 'seed'" class="flower-seed"></div>
+          <!-- 使用图片图标的花种（如玫瑰） -->
+          <img
+            v-if="useImageIcon(f)"
+            :src="getStageIconUrl(f)"
+            :alt="stageLabel(f?.stage)"
+            class="flower-stage-img"
+            :class="`flower-stage-${f?.stage}`"
+            @error="(e) => onFlowerImgError(f, e)"
+          />
+          <!-- CSS 动画绘制的花种（如异世之花） -->
+          <template v-else>
+            <!-- seed 种子：俯视小褐色圆点 -->
+            <div v-if="f?.stage === 'seed'" class="flower-seed"></div>
 
-          <!-- sprout 幼苗：俯视一圈嫩绿小芽 -->
-          <div v-else-if="f?.stage === 'sprout'" class="flower-sprout">
-            <div class="sprout-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg)` }"></div>
-          </div>
-
-          <!-- seedling 中苗：俯视绿色叶簇莲座 -->
-          <div v-else-if="f?.stage === 'seedling'" class="flower-seedling">
-            <div class="seedling-leaf" v-for="i in 8" :key="i" :style="{ transform: `rotate(${i * 45}deg) translateY(-12px)` }"></div>
-            <div class="seedling-center"></div>
-          </div>
-
-          <!-- bud 花苞：俯视叶簇中央显现花苞 -->
-          <div v-else-if="f?.stage === 'bud'" class="flower-bud">
-            <div class="bud-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg) translateY(-16px)` }"></div>
-            <div class="bud-body"></div>
-          </div>
-
-          <!-- bloom 开放：俯视完整玫瑰植株 -->
-          <div v-else class="flower-bloom">
-            <!-- 外层叶片环（6片深绿椭圆叶片） -->
-            <div class="leaf-ring">
-              <div class="outer-leaf" v-for="i in 6" :key="'leaf-' + i" :style="{ transform: `rotate(${i * 60}deg) translateY(-20px)` }"></div>
+            <!-- sprout 幼苗：俯视一圈嫩绿小芽 -->
+            <div v-else-if="f?.stage === 'sprout'" class="flower-sprout">
+              <div class="sprout-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg)` }"></div>
             </div>
-            <!-- 花萼层（5片较短叶片，深绿偏褐） -->
-            <div class="sepal-ring">
-              <div class="sepal" v-for="i in 5" :key="'sepal-' + i" :style="{ transform: `rotate(${i * 72}deg) translateY(-14px)` }"></div>
+
+            <!-- seedling 中苗：俯视绿色叶簇莲座 -->
+            <div v-else-if="f?.stage === 'seedling'" class="flower-seedling">
+              <div class="seedling-leaf" v-for="i in 8" :key="i" :style="{ transform: `rotate(${i * 45}deg) translateY(-12px)` }"></div>
+              <div class="seedling-center"></div>
             </div>
-            <!-- 花头：俯视多层立体花瓣 -->
-            <div class="flower-head">
-              <!-- 外层花瓣（宽大外翻，深红） -->
-              <div class="petal outer" v-for="i in 8" :key="'outer-' + i" :style="{ transform: `rotate(${i * 45}deg)` }"></div>
-              <!-- 中层花瓣（收拢，红色） -->
-              <div class="petal middle" v-for="i in 6" :key="'middle-' + i" :style="{ transform: `rotate(${i * 60 + 30}deg)` }"></div>
-              <!-- 内层花瓣（包裹花心，粉红） -->
-              <div class="petal inner" v-for="i in 5" :key="'inner-' + i" :style="{ transform: `rotate(${i * 72 + 15}deg)` }"></div>
-              <!-- 花心 -->
-              <div class="flower-center"></div>
+
+            <!-- bud 花苞：俯视叶簇中央显现花苞 -->
+            <div v-else-if="f?.stage === 'bud'" class="flower-bud">
+              <div class="bud-leaf" v-for="i in 6" :key="i" :style="{ transform: `rotate(${i * 60}deg) translateY(-16px)` }"></div>
+              <div class="bud-body"></div>
             </div>
-          </div>
+
+            <!-- bloom 开放：俯视完整异世之花植株 -->
+            <div v-else class="flower-bloom">
+              <!-- 外层叶片环（6片深绿椭圆叶片） -->
+              <div class="leaf-ring">
+                <div class="outer-leaf" v-for="i in 6" :key="'leaf-' + i" :style="{ transform: `rotate(${i * 60}deg) translateY(-26px)` }"></div>
+              </div>
+              <!-- 花萼层（5片较短叶片，深绿偏褐） -->
+              <div class="sepal-ring">
+                <div class="sepal" v-for="i in 5" :key="'sepal-' + i" :style="{ transform: `rotate(${i * 72}deg) translateY(-18px)` }"></div>
+              </div>
+              <!-- 花头：俯视多层立体花瓣 -->
+              <div class="flower-head">
+                <!-- 外层花瓣（宽大外翻，深红） -->
+                <div class="petal outer" v-for="i in 8" :key="'outer-' + i" :style="{ transform: `rotate(${i * 45}deg)` }"></div>
+                <!-- 中层花瓣（收拢，红色） -->
+                <div class="petal middle" v-for="i in 6" :key="'middle-' + i" :style="{ transform: `rotate(${i * 60 + 30}deg)` }"></div>
+                <!-- 内层花瓣（包裹花心，粉红） -->
+                <div class="petal inner" v-for="i in 5" :key="'inner-' + i" :style="{ transform: `rotate(${i * 72 + 15}deg)` }"></div>
+                <!-- 花心 -->
+                <div class="flower-center"></div>
+              </div>
+            </div>
+          </template>
         </div>
 
         <!-- 浇水动画 -->
@@ -637,6 +683,29 @@ onMounted(() => {
   transition: transform 0.3s ease;
 }
 
+/* 图片图标（玫瑰等花种） */
+.flower-stage-img {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+  filter: drop-shadow(2px 4px 6px rgba(0,0,0,0.4));
+}
+/* 种子和幼苗保持原大小 */
+.flower-stage-seed,
+.flower-stage-sprout {
+  width: 52px;
+  height: 52px;
+}
+/* 中苗、花苞、开放调大 */
+.flower-stage-seedling,
+.flower-stage-bud,
+.flower-stage-bloom {
+  width: 88px;
+  height: 88px;
+}
+
 /* ============ 各阶段立体花朵（俯视） ============ */
 
 /* seed 种子：俯视小褐色圆点 */
@@ -647,12 +716,12 @@ onMounted(() => {
   width: 10px;
   height: 8px;
   margin: -4px 0 0 -5px;
-  background: radial-gradient(ellipse at 30% 40%, #6b4423 0%, #5d3a1a 50%, #3d2812 100%);
+  background: radial-gradient(ellipse at 30% 40%, rgba(224,247,255,0.85) 0%, rgba(129,212,250,0.6) 50%, rgba(2,136,209,0.4) 100%);
   border-radius: 50%;
   box-shadow:
-    inset -1px -1px 2px rgba(0,0,0,0.6),
-    inset 1px 1px 2px rgba(100,70,40,0.4),
-    0 2px 4px rgba(0,0,0,0.5);
+    inset -1px -1px 2px rgba(2,119,189,0.4),
+    inset 1px 1px 2px rgba(255,255,255,0.8),
+    0 2px 4px rgba(2,136,209,0.3);
 }
 
 /* sprout 幼苗：俯视一圈嫩绿小芽 */
@@ -736,18 +805,18 @@ onMounted(() => {
   height: 24px;
   margin: -14px 0 0 -8px;
   background: linear-gradient(180deg,
-    var(--flower-center) 0%,
-    var(--flower-secondary) 30%,
-    var(--flower-primary) 70%,
-    var(--flower-shadow) 100%);
+    rgba(255,255,255,0.9) 0%,
+    rgba(248,252,255,0.8) 30%,
+    rgba(235,242,250,0.6) 70%,
+    rgba(210,225,240,0.4) 100%);
   border-radius: 40% 40% 50% 50% / 60% 60% 40% 40%;
   box-shadow:
-    inset 3px 2px 6px rgba(255,255,255,0.4),
-    inset -2px 0 4px rgba(0,0,0,0.15),
-    -3px 4px 8px rgba(0,0,0,0.4);
+    inset 3px 2px 6px rgba(255,255,255,0.7),
+    inset -2px 0 4px rgba(180,190,200,0.2),
+    -3px 4px 8px rgba(150,160,170,0.3);
 }
 
-/* ============ bloom 开放：俯视完整玫瑰植株 ============ */
+/* ============ bloom 开放：俯视完整异世之花植株 ============ */
 .flower-bloom {
   position: absolute;
   top: 50%;
@@ -756,11 +825,21 @@ onMounted(() => {
   height: 55px;
   margin: -27.5px;
   filter: drop-shadow(2px 4px 6px rgba(0,0,0,0.4));
-  animation: bloomGlow 3s ease-in-out infinite;
 }
 @keyframes bloomGlow {
-  0%, 100% { filter: drop-shadow(2px 4px 6px rgba(0,0,0,0.4)); }
-  50% { filter: drop-shadow(2px 4px 8px rgba(0,0,0,0.5)) brightness(1.05); }
+  0%, 100% {
+    filter: drop-shadow(2px 4px 6px rgba(0,0,0,0.4))
+            drop-shadow(0 0 3px rgba(129,212,250,0.4));
+  }
+  50% {
+    filter: drop-shadow(2px 4px 8px rgba(0,0,0,0.5))
+            drop-shadow(0 0 8px rgba(129,212,250,0.8))
+            brightness(1.1);
+  }
+}
+@keyframes bloomFloat {
+  0%, 100% { top: 50%; }
+  50% { top: calc(50% - 6px); }
 }
 
 /* ============ 外层叶片环 ============ */
@@ -816,6 +895,11 @@ onMounted(() => {
   width: 28px;
   height: 28px;
   margin: -14px;
+  animation: flowerHeadRotate 20s linear infinite, bloomFloat 4s ease-in-out infinite, bloomGlow 3s ease-in-out infinite;
+}
+@keyframes flowerHeadRotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* 花瓣基础样式：水滴/扇形 */
@@ -833,12 +917,12 @@ onMounted(() => {
   margin-left: -5px;
   margin-top: -16px;
   background: radial-gradient(ellipse at 30% 35%,
-    #dc5a4c 0%, #c0392b 40%, #a93226 100%);
+    rgba(255,255,255,0.65) 0%, rgba(179,229,252,0.4) 35%, rgba(2,136,209,0.25) 100%);
   border-radius: 65% 35% 70% 30% / 80% 70% 30% 20%;
   box-shadow:
-    inset 2px 1px 4px rgba(255,255,255,0.3),
-    inset -1px 0 3px rgba(0,0,0,0.25),
-    -2px 2px 5px rgba(0,0,0,0.3);
+    inset 2px 1px 4px rgba(255,255,255,0.7),
+    inset -1px 0 3px rgba(2,119,189,0.2),
+    -2px 2px 5px rgba(2,136,209,0.3);
 }
 
 /* 中层花瓣：收拢，红色 */
@@ -848,12 +932,12 @@ onMounted(() => {
   margin-left: -4px;
   margin-top: -13px;
   background: radial-gradient(ellipse at 30% 35%,
-    #f16051 0%, #e74c3c 40%, #c0392b 100%);
+    rgba(255,255,255,0.85) 0%, rgba(129,212,250,0.6) 35%, rgba(2,136,209,0.4) 100%);
   border-radius: 60% 40% 65% 35% / 75% 70% 30% 25%;
   box-shadow:
-    inset 2px 1px 3px rgba(255,255,255,0.25),
-    inset -1px 0 2px rgba(0,0,0,0.2),
-    -1px 2px 4px rgba(0,0,0,0.25);
+    inset 2px 1px 3px rgba(255,255,255,0.7),
+    inset -1px 0 2px rgba(2,119,189,0.2),
+    -1px 2px 4px rgba(2,136,209,0.3);
 }
 
 /* 内层花瓣：包裹花心，粉红 */
@@ -863,12 +947,12 @@ onMounted(() => {
   margin-left: -3px;
   margin-top: -10px;
   background: radial-gradient(ellipse at 30% 35%,
-    #ffcccc 0%, #ff6b6b 40%, #e74c3c 100%);
+    rgba(255,255,255,1) 0%, rgba(179,229,252,0.9) 35%, rgba(79,195,247,0.75) 100%);
   border-radius: 55% 45% 60% 40% / 70% 65% 35% 30%;
   box-shadow:
-    inset 1px 0 3px rgba(255,255,255,0.3),
-    inset -1px 0 2px rgba(0,0,0,0.15),
-    -1px 1px 3px rgba(0,0,0,0.2);
+    inset 1px 0 3px rgba(255,255,255,0.8),
+    inset -1px 0 2px rgba(2,119,189,0.2),
+    -1px 1px 3px rgba(2,136,209,0.3);
 }
 
 /* 花心 */
@@ -880,11 +964,11 @@ onMounted(() => {
   height: 6px;
   margin: -3px;
   background: radial-gradient(circle at 30% 30%,
-    #fff8e1 0%, #ffecb3 40%, #ffe082 70%, #ffd54f 100%);
+    rgba(255,255,255,0.95) 0%, rgba(224,247,255,0.8) 40%, rgba(129,212,250,0.5) 70%, rgba(79,195,247,0.3) 100%);
   border-radius: 50%;
   box-shadow:
-    0 0 3px rgba(255, 215, 0, 0.5),
-    inset 0 0 2px rgba(255,255,255,0.4);
+    0 0 4px rgba(129,212,250,0.5),
+    inset 0 0 2px rgba(255,255,255,0.6);
 }
 
 /* 浇水动画 */

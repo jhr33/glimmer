@@ -10,6 +10,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.BannedWordFilterService;
 import com.glimmer.common.util.TokenBalanceHelper;
 import com.glimmer.entity.DriftBottle;
 import com.glimmer.entity.DriftBottlePickRecord;
@@ -58,6 +59,7 @@ public class LetterServiceImpl implements LetterService {
     private final UserService userService;
     private final ReportMapper reportMapper;
     private final TokenBalanceHelper tokenBalanceHelper;
+    private final BannedWordFilterService bannedWordFilterService;
 
     public LetterServiceImpl(LetterMapper letterMapper,
                              UserMapper userMapper,
@@ -68,7 +70,8 @@ public class LetterServiceImpl implements LetterService {
                              ObjectMapper objectMapper,
                              UserService userService,
                              ReportMapper reportMapper,
-                             TokenBalanceHelper tokenBalanceHelper) {
+                             TokenBalanceHelper tokenBalanceHelper,
+                             BannedWordFilterService bannedWordFilterService) {
         this.letterMapper = letterMapper;
         this.userMapper = userMapper;
         this.tokenTransactionMapper = tokenTransactionMapper;
@@ -79,6 +82,7 @@ public class LetterServiceImpl implements LetterService {
         this.userService = userService;
         this.reportMapper = reportMapper;
         this.tokenBalanceHelper = tokenBalanceHelper;
+        this.bannedWordFilterService = bannedWordFilterService;
     }
 
     @Override
@@ -86,6 +90,8 @@ public class LetterServiceImpl implements LetterService {
     public void writeLetter(Long senderId, Long receiverId, String content, Long sourceBottleReplyId) {
         // 校验发送者非 banned
         userService.checkUserNotMuted(senderId);
+        // 违禁词检测
+        bannedWordFilterService.check(content, "writeLetter");
 
         // 校验代币余额 >= 1
         User sender = userMapper.selectById(senderId);
@@ -163,6 +169,7 @@ public class LetterServiceImpl implements LetterService {
     @Transactional(rollbackFor = Exception.class)
     public void replyLetter(Long userId, Long letterId, String content) {
         userService.checkUserNotMuted(userId);
+        bannedWordFilterService.check(content, "replyLetter");
 
         Letter original = letterMapper.selectById(letterId);
         if (original == null) {

@@ -51,14 +51,14 @@ import java.util.stream.Collectors;
 @Service
 public class AiConversationServiceImpl implements AiConversationService {
 
-    /** 单个会话安全硬上限消息数（防异常暴涨，不再作为业务关闭线） */
+    /** 会话 max_messages 字段默认值（仅作信息展示，不再触发关闭） */
     private static final int SAFETY_MAX_MESSAGES = 500;
     /** 开启会话消耗代币 */
     private static final int START_CONVERSATION_TOKEN_COST = 1;
-    /** 免费会话每日轮次上限 */
-    private static final int FREE_DAILY_QUOTA = 10;
-    /** 每次解锁增加的轮次 */
-    private static final int UNLOCK_QUOTA_STEP = 10;
+    /** 免费会话每日 token 上限 */
+    private static final int FREE_DAILY_QUOTA = 9999;
+    /** 每次代币解锁增加的 token 数 */
+    private static final int UNLOCK_QUOTA_STEP = 18888;
     /** 摘要提取时取最近的消息条数（10 轮 = 20 条） */
     private static final int SUMMARY_MESSAGE_LIMIT = 20;
     /** 上海时区，用于每日额度重置判断 */
@@ -310,19 +310,15 @@ public class AiConversationServiceImpl implements AiConversationService {
         // 3. 懒重置免费会话额度
         resetQuotaIfStale(conversation);
 
-        // 4. 配额校验：1轮 = 1用户消息 + 1AI回复，额度用完不可发送
+        // 4. 配额校验：token 用完不可发送
         int quotaUsed = conversation.getQuotaUsed() != null ? conversation.getQuotaUsed() : 0;
         int quotaLimit = conversation.getQuotaLimit() != null ? conversation.getQuotaLimit() : FREE_DAILY_QUOTA;
         if (quotaUsed >= quotaLimit) {
             throw new BusinessException(ErrorCode.AI_QUOTA_EXHAUSTED);
         }
 
-        // 5. 安全硬上限校验（防异常暴涨）
+        // 5. 会话不再因消息上限关闭（max_messages 仅作信息展示）
         int maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : SAFETY_MAX_MESSAGES;
-        if (conversation.getMessageCount() != null && conversation.getMessageCount() >= maxMessages) {
-            closeConversationInternal(conversation);
-            throw new BusinessException(ErrorCode.AI_CONVERSATION_CLOSED);
-        }
 
         LocalDateTime now = LocalDateTime.now();
 
@@ -353,7 +349,9 @@ public class AiConversationServiceImpl implements AiConversationService {
         List<DeepSeekMessage> deepSeekMessages = buildContextWithSummary(userId, conversation, content, userMessage.getId());
 
         // 9. 调用 DeepSeek（失败抛 BusinessException，事务回滚 user 消息插入）
-        String aiContent = deepSeekClient.chatCompletion(deepSeekMessages);
+        DeepSeekClient.ChatResult chatResult = deepSeekClient.chatCompletion(deepSeekMessages);
+        String aiContent = chatResult.getContent();
+        int totalTokens = chatResult.getTotalTokens();
 
         // 10. 插入 ai_message（role='ai'）
         LocalDateTime aiTime = LocalDateTime.now();
@@ -369,27 +367,17 @@ public class AiConversationServiceImpl implements AiConversationService {
         appendToContextCache(conversationId, "user", content, maxContext);
         appendToContextCache(conversationId, "ai", aiContent, maxContext);
 
-        // 12. 更新 message_count += 1, quota_used += 1, last_active_at
+        // 12. 更新 message_count += 1, quota_used += totalTokens, last_active_at
+        // 计费从轮次改为 token：累加本次 AI 调用实际消耗的 totalTokens
+        // 会话不再因消息上限关闭，仅累加计数与配额
         int newCountAfterAi = newCountAfterUser + 1;
-        int newQuotaUsed = quotaUsed + 1;
+        int newQuotaUsed = quotaUsed + totalTokens;
         boolean quotaExhausted = newQuotaUsed >= quotaLimit;
-        // 安全硬上限触发时关闭会话
-        boolean shouldClose = newCountAfterAi >= maxMessages;
-        if (shouldClose) {
-            aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
-                    .eq(AiConversation::getId, conversationId)
-                    .set(AiConversation::getMessageCount, newCountAfterAi)
-                    .set(AiConversation::getQuotaUsed, newQuotaUsed)
-                    .set(AiConversation::getLastActiveAt, aiTime)
-                    .set(AiConversation::getStatus, "closed"));
-            evictContextCache(conversationId);
-        } else {
-            aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
-                    .eq(AiConversation::getId, conversationId)
-                    .set(AiConversation::getMessageCount, newCountAfterAi)
-                    .set(AiConversation::getQuotaUsed, newQuotaUsed)
-                    .set(AiConversation::getLastActiveAt, aiTime));
-        }
+        aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                .eq(AiConversation::getId, conversationId)
+                .set(AiConversation::getMessageCount, newCountAfterAi)
+                .set(AiConversation::getQuotaUsed, newQuotaUsed)
+                .set(AiConversation::getLastActiveAt, aiTime));
 
         log.info("AI 消息发送成功: userId={}, conversationId={}, messageCount={}, quotaUsed={}/{}",
                 userId, conversationId, newCountAfterAi, newQuotaUsed, quotaLimit);
@@ -398,7 +386,7 @@ public class AiConversationServiceImpl implements AiConversationService {
         SendMessageResponse response = new SendMessageResponse();
         response.setUserMessage(toMessageVO(userMessage));
         response.setAiMessage(toMessageVO(aiMessage));
-        response.setConversationStatus(shouldClose ? "closed" : "active");
+        response.setConversationStatus("active");
         response.setMessageCount(newCountAfterAi);
         response.setMaxMessages(maxMessages);
         response.setQuotaUsed(newQuotaUsed);
@@ -509,7 +497,7 @@ public class AiConversationServiceImpl implements AiConversationService {
             String prompt = String.format(deepSeekProperties.getSummaryPrompt(), dialogContent.toString());
             List<DeepSeekMessage> summaryMessages = new ArrayList<>();
             summaryMessages.add(new DeepSeekMessage("user", prompt));
-            String response = deepSeekClient.chatCompletion(summaryMessages);
+            String response = deepSeekClient.chatCompletion(summaryMessages).getContent();
 
             // 4. 解析 JSON（容错：去除 ```json 包裹）
             String json = response.trim();
@@ -574,13 +562,8 @@ public class AiConversationServiceImpl implements AiConversationService {
                 return;
             }
 
-            // 5. 安全硬上限校验
+            // 5. 会话不再因消息上限关闭（max_messages 仅作信息展示）
             maxMessages = conversation.getMaxMessages() != null ? conversation.getMaxMessages() : SAFETY_MAX_MESSAGES;
-            if (conversation.getMessageCount() != null && conversation.getMessageCount() >= maxMessages) {
-                closeConversationInternal(conversation);
-                sendError(emitter, objectMapper, "会话已关闭");
-                return;
-            }
 
             LocalDateTime now = LocalDateTime.now();
 
@@ -612,12 +595,19 @@ public class AiConversationServiceImpl implements AiConversationService {
 
             // 9. 流式调用 DeepSeek（使用回调方式）
             StringBuilder fullContent = new StringBuilder();
+            // 用于在 StreamCallback 回调中保存本次调用的 token 用量
+            final int[] totalTokensHolder = {0};
 
             deepSeekClient.chatCompletionStream(deepSeekMessages, new DeepSeekClient.StreamCallback() {
                 @Override
                 public void onDelta(String delta) {
                     fullContent.append(delta);
                     sendDelta(emitter, objectMapper, delta);
+                }
+
+                @Override
+                public void onComplete(int totalTokens) {
+                    totalTokensHolder[0] = totalTokens;
                 }
 
                 @Override
@@ -647,32 +637,24 @@ public class AiConversationServiceImpl implements AiConversationService {
                 appendToContextCache(conversationId, "user", content, maxContext);
                 appendToContextCache(conversationId, "ai", finalContent, maxContext);
 
-                // 更新会话状态：message_count += 1, quota_used += 1
+                // 更新会话状态：message_count += 1, quota_used += totalTokens
+                // 计费从轮次改为 token：累加本次 AI 调用实际消耗的 totalTokens
+                // 会话不再因消息上限关闭，仅累加计数与配额
                 int count = newCountAfterUser + 1;
-                int newQuotaUsed = quotaUsed + 1;
+                int totalTokens = totalTokensHolder[0];
+                int newQuotaUsed = quotaUsed + totalTokens;
                 boolean quotaExhausted = newQuotaUsed >= quotaLimit;
-                boolean shouldClose = count >= maxMessages;
-                if (shouldClose) {
-                    aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
-                            .eq(AiConversation::getId, conversationId)
-                            .set(AiConversation::getMessageCount, count)
-                            .set(AiConversation::getQuotaUsed, newQuotaUsed)
-                            .set(AiConversation::getLastActiveAt, aiTime)
-                            .set(AiConversation::getStatus, "closed"));
-                    evictContextCache(conversationId);
-                } else {
-                    aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
-                            .eq(AiConversation::getId, conversationId)
-                            .set(AiConversation::getMessageCount, count)
-                            .set(AiConversation::getQuotaUsed, newQuotaUsed)
-                            .set(AiConversation::getLastActiveAt, aiTime));
-                }
+                aiConversationMapper.update(null, new LambdaUpdateWrapper<AiConversation>()
+                        .eq(AiConversation::getId, conversationId)
+                        .set(AiConversation::getMessageCount, count)
+                        .set(AiConversation::getQuotaUsed, newQuotaUsed)
+                        .set(AiConversation::getLastActiveAt, aiTime));
 
                 log.info("AI 流式消息发送成功: userId={}, conversationId={}, messageCount={}, quotaUsed={}/{}",
                         userId, conversationId, count, newQuotaUsed, quotaLimit);
 
                 sendFinal(emitter, objectMapper, toMessageVO(aiMessage), toMessageVO(userMessage),
-                        shouldClose ? "closed" : "active", count, maxMessages,
+                        "active", count, maxMessages,
                         newQuotaUsed, quotaLimit, quotaExhausted);
             } catch (Exception e) {
                 log.error("保存 AI 消息失败", e);

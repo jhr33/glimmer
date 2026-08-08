@@ -48,7 +48,10 @@ public enum ErrorCode {
     USER_MUTED(4019, "用户已被禁言"),
 
     // AI 对话额度相关 4020
-    AI_QUOTA_EXHAUSTED(4020, "本轮对话额度已用完");
+    AI_QUOTA_EXHAUSTED(4020, "本轮对话额度已用完"),
+
+    // 内容安全相关 4021
+    CONTENT_BANNED(4021, "内容包含违规词汇");
 
     private final int code;
     private final String message;

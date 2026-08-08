@@ -5,6 +5,7 @@ import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.config.ai.DeepSeekProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import lombok.Data;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -42,12 +43,26 @@ public class DeepSeekClient {
     }
 
     /**
+     * 同步调用结果：包含 AI 回复内容与 token 用量
+     */
+    @Data
+    public static class ChatResult {
+        private String content;
+        private int totalTokens;
+
+        public ChatResult(String content, int totalTokens) {
+            this.content = content;
+            this.totalTokens = totalTokens;
+        }
+    }
+
+    /**
      * 调用 DeepSeek Chat Completion
      *
      * @param messages 消息列表（含 system 提示词）
-     * @return AI 回复内容
+     * @return ChatResult（包含 AI 回复内容与 token 用量）
      */
-    public String chatCompletion(List<DeepSeekMessage> messages) {
+    public ChatResult chatCompletion(List<DeepSeekMessage> messages) {
         DeepSeekRequest request = new DeepSeekRequest();
         request.setModel(properties.getModel());
         request.setMessages(messages);
@@ -74,7 +89,7 @@ public class DeepSeekClient {
                 content = "（AI 暂未返回内容）";
             }
             log.info("DeepSeek 调用成功: model={}, usage={}", properties.getModel(), response.getUsage());
-            return content;
+            return new ChatResult(content, response.getUsage() != null ? response.getUsage().getTotalTokens() : 0);
         } catch (BusinessException e) {
             throw e;
         } catch (HttpStatusCodeException e) {
@@ -100,6 +115,13 @@ public class DeepSeekClient {
         request.setModel(properties.getModel());
         request.setMessages(messages);
         request.setStream(true);
+        // 开启 include_usage，使流式响应最后一个 chunk 携带 usage 字段，用于 token 计费统计
+        DeepSeekRequest.StreamOptions opts = new DeepSeekRequest.StreamOptions();
+        opts.setIncludeUsage(true);
+        request.setStreamOptions(opts);
+
+        // 累计 token 用量（最后一个 chunk 才会携带 usage）
+        int totalTokens = 0;
 
         HttpURLConnection connection = null;
         BufferedReader reader = null;
@@ -143,6 +165,14 @@ public class DeepSeekClient {
                 }
                 try {
                     JsonNode root = objectMapper.readTree(data);
+                    // 检查 usage 字段（include_usage=true 时，最后一个 chunk 会携带）
+                    JsonNode usage = root.get("usage");
+                    if (usage != null && !usage.isNull()) {
+                        JsonNode totalNode = usage.get("total_tokens");
+                        if (totalNode != null && !totalNode.isNull()) {
+                            totalTokens = totalNode.asInt();
+                        }
+                    }
                     JsonNode choices = root.get("choices");
                     if (choices != null && !choices.isEmpty()) {
                         JsonNode delta = choices.get(0).get("delta");
@@ -152,18 +182,16 @@ public class DeepSeekClient {
                                 callback.onDelta(content.asText());
                             }
                         }
-                        // 检查是否结束
-                        JsonNode finishReason = choices.get(0).get("finish_reason");
-                        if (finishReason != null && !finishReason.isNull()) {
-                            break;
-                        }
+                        // 注意：此处不再因 finish_reason 提前 break —— usage 字段会在
+                        // finish_reason 之后的最后一个 chunk 中返回，提前 break 会丢失 token 用量
                     }
                 } catch (Exception e) {
                     log.warn("解析 DeepSeek 流式响应失败: {}", data, e);
                 }
             }
 
-            log.info("DeepSeek 流式调用完成");
+            log.info("DeepSeek 流式调用完成, totalTokens={}", totalTokens);
+            callback.onComplete(totalTokens);
 
         } catch (Exception e) {
             log.error("DeepSeek 流式调用异常", e);
@@ -188,6 +216,13 @@ public class DeepSeekClient {
     @FunctionalInterface
     public interface StreamCallback {
         void onDelta(String delta);
+
+        /**
+         * 流式调用完成后回调，传递累计的 token 用量
+         */
+        default void onComplete(int totalTokens) {
+            // 默认空实现
+        }
 
         default void onError(Exception e) {
             // 默认空实现
