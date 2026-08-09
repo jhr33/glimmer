@@ -1,8 +1,10 @@
 package com.glimmer.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.glimmer.config.EncryptedFieldTypeHandler;
 import lombok.Data;
 
 import java.time.LocalDateTime;
@@ -11,7 +13,7 @@ import java.time.LocalDateTime;
  * 信件表（letter）
  */
 @Data
-@TableName("letter")
+@TableName(value = "letter", autoResultMap = true)
 public class Letter {
 
     @TableId(type = IdType.AUTO)
@@ -28,6 +30,8 @@ public class Letter {
 
     private Long sourceId;
 
+    /** 信件内容（DB 中为 AES-GCM 密文，业务层读写明文） */
+    @TableField(typeHandler = EncryptedFieldTypeHandler.class)
     private String content;
 
     /** 是否已被回复（0未回复/1已回复） */

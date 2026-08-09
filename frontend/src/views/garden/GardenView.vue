@@ -65,15 +65,17 @@ function getBrightnessLevel(total) {
 }
 const brightnessLevel = computed(() => getBrightnessLevel(totalFirefly.value))
 
-// 中心亮度：萤火虫越多，遮罩中心越透明（露出背景），但保留一定遮罩使中心不过亮，边缘始终全黑
+// 中心亮度（传值给 FireflyCanvas，遮罩不透明度 = 1 - centerLight）
+// 中心比之前稍亮，但亮区限定在 0~30% 半径；30% 半径外立刻压到 93%+ 黑，
+// 让萤火虫挖洞在黑暗外围形成极强对比（外围背景透出 < 7%，挖洞处透出 100%）。
 const centerLight = computed(() => {
   const level = brightnessLevel.value
   if (level === 0) return 0
-  if (level === 1) return 0.15
-  if (level === 2) return 0.28
-  if (level === 3) return 0.4
-  if (level === 4) return 0.5
-  return 0.6
+  if (level === 1) return 0.06
+  if (level === 2) return 0.14
+  if (level === 3) return 0.24
+  if (level === 4) return 0.36
+  return 0.50
 })
 
 const STAGE_LABELS = {

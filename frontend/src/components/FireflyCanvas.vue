@@ -31,7 +31,7 @@ class Firefly {
  this.sizePhase = Math.random() * Math.PI * 2;
  this.sizePhaseSpeed = Math.random() * 0.03 + 0.01;
  this.sizeAmp = Math.random() * 0.3 + 0.2;
- this.alphaMin = Math.random() * 0.06;
+ this.alphaMin = Math.random() * 0.02;
  this.alphaMax = Math.random() * 0.25 + 0.75;
  this.alpha = this.alphaMin;
  this.phase = Math.random() * Math.PI * 2;
@@ -96,20 +96,22 @@ class Firefly {
  this.size = this.baseSize * (1 + Math.sin(this.sizePhase) * this.sizeAmp);
  }
  draw(ctx) {
- const alpha = Math.min(1, this.alpha * 1.5);
- const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size * 3);
- gradient.addColorStop(0, `rgba(255, 255, 240, ${alpha})`);
- gradient.addColorStop(0.3, `rgba(255, 220, 100, ${alpha * 0.85})`);
- gradient.addColorStop(0.6, `rgba(255, 200, 80, ${alpha * 0.45})`);
- gradient.addColorStop(1, `rgba(255, 180, 60, 0)`);
- ctx.beginPath();
- ctx.arc(this.x, this.y, this.size * 3, 0, Math.PI * 2);
- ctx.fillStyle = gradient;
- ctx.fill();
- ctx.beginPath();
- ctx.arc(this.x, this.y, this.size * 0.8, 0, Math.PI * 2);
- ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
- ctx.fill();
+  const alpha = Math.min(1, this.alpha * 1.9);
+  // 光晕圈更小：size * 2.3（原 3），且衰减更慢（中段占比更高）→ 小而亮
+  const gradient = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size * 2.3);
+  gradient.addColorStop(0, `rgba(255, 255, 240, ${alpha})`);
+  gradient.addColorStop(0.35, `rgba(255, 230, 120, ${alpha * 0.95})`);
+  gradient.addColorStop(0.70, `rgba(255, 210, 90, ${alpha * 0.60})`);
+  gradient.addColorStop(1, `rgba(255, 180, 60, 0)`);
+  ctx.beginPath();
+  ctx.arc(this.x, this.y, this.size * 2.3, 0, Math.PI * 2);
+  ctx.fillStyle = gradient;
+  ctx.fill();
+  // 中心亮点略放大 + 纯白色永远 1.0 alpha = 极亮的小灯泡芯
+  ctx.beginPath();
+  ctx.arc(this.x, this.y, this.size * 0.95, 0, Math.PI * 2);
+  ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(1, this.alpha * 2.5)})`;
+  ctx.fill();
  }
 }
 function initCanvas() {
@@ -125,12 +127,12 @@ function initCanvas() {
  animate();
 }
 function resizeCanvas() {
- const canvas = canvasRef.value;
- if (!canvas)
- return;
- const parent = canvas.parentElement;
- canvas.width = parent.clientWidth;
- canvas.height = parent.clientHeight;
+  const canvas = canvasRef.value;
+  if (!canvas)
+    return;
+  const parent = canvas.parentElement;
+  canvas.width = parent.clientWidth;
+  canvas.height = parent.clientHeight;
 }
 function handleMouseMove(e) {
  mouseX = e.clientX;
@@ -155,30 +157,65 @@ function animate() {
  return;
  const canvas = canvasRef.value;
  ctx.clearRect(0, 0, canvas.width, canvas.height);
- // 1. 黑暗遮罩：径向渐变，中心随萤火变亮，边缘始终全黑
- ctx.globalCompositeOperation = 'source-over';
+ // 1. 黑暗遮罩：双段二次曲线 + 平滑倾斜椭圆
+ //    设计目标：
+ //      - 中心紧凑小亮区、外围极黑（与萤火虫挖洞强对比）
+ //      - 整体倾斜 17°、X 轴拉长 12%、Y 轴压扁 15% → 光滑倾斜椭圆，边界完全平滑无啃噬
+ const R = 0.36;         // 中心小亮区半径阈值（相对于 maxR 的比例）
+ const DARK_ALPHA = 0.92; // 超过 R 半径的基础暗度
+ const EDGE_ALPHA = 0.995;
+ const TILT_DEG = 17;     // 整体倾斜角度
+ const S_X = 1.12;        // X 轴拉伸
+ const S_Y = 0.85;        // Y 轴压缩
  const cx = canvas.width / 2;
  const cy = canvas.height / 2;
  const maxR = Math.sqrt(cx * cx + cy * cy);
  const centerAlpha = Math.max(0, 1 - props.centerLight);
- const maskGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, maxR);
- maskGrad.addColorStop(0, `rgba(0, 0, 0, ${centerAlpha})`);
- maskGrad.addColorStop(0.55, `rgba(0, 0, 0, ${centerAlpha * 0.5 + 0.5})`);
- maskGrad.addColorStop(1, 'rgba(0, 0, 0, 1)');
+
+ // 用 transform 建立倾斜 + 缩放坐标系，径向渐变会自然变成"倾斜椭圆"
+ ctx.globalCompositeOperation = 'source-over';
+ ctx.save();
+ ctx.translate(cx, cy);
+ ctx.rotate(TILT_DEG * Math.PI / 180);
+ ctx.scale(S_X, S_Y);
+ const maskGrad = ctx.createRadialGradient(0, 0, 0, 0, 0, maxR);
+ const innerStops = [0.00, 0.10, 0.22, R];
+ for (const r of innerStops) {
+   const t = r / R;
+   const ts = t * t * (3 - 2 * t); // smoothstep：中心→暗区过渡更自然
+   const a = centerAlpha + (DARK_ALPHA - centerAlpha) * ts;
+   maskGrad.addColorStop(r, `rgba(0, 0, 0, ${a.toFixed(4)})`);
+ }
+ const outerStops = [R, 0.40, 0.52, 0.64, 0.76, 0.88, 1.00];
+ for (const r of outerStops) {
+   const t = (r - R) / (1 - R);
+   const ts = t * t * (3 - 2 * t); // smoothstep：椭圆边缘亮度递减更平缓
+   const a = DARK_ALPHA + (EDGE_ALPHA - DARK_ALPHA) * ts;
+   maskGrad.addColorStop(r, `rgba(0, 0, 0, ${a.toFixed(4)})`);
+ }
+ maskGrad.addColorStop(1, `rgba(0, 0, 0, ${EDGE_ALPHA})`);
  ctx.fillStyle = maskGrad;
- ctx.fillRect(0, 0, canvas.width, canvas.height);
+ // fillRect 在变形坐标系中，大尺寸覆盖旋转+缩放后的整个画布
+ const PAD = maxR * 2.2;
+ ctx.fillRect(-PAD, -PAD, PAD * 2, PAD * 2);
+ ctx.restore();
  // 2. 萤火虫光照：在黑暗层上"挖洞"，露出下方背景图（萤火虫作为光源照亮周边）
+ //    大光圈 + 多段渐变 → 边缘柔和；alpha 阈值化 → 暗阶段熄灭不挖洞
  ctx.globalCompositeOperation = 'destination-out';
  fireflies.forEach(firefly => {
  firefly.update(canvas.width, canvas.height, mouseX, mouseY);
- const lightRadius = Math.max(9, firefly.size * 6);
+ // 光圈更大（size * 11），渐变 stops 更多 → 边缘过渡自然
+ const lightRadius = Math.max(10, firefly.size * 11);
  const gradient = ctx.createRadialGradient(
  firefly.x, firefly.y, 0,
  firefly.x, firefly.y, lightRadius
  );
- const lightStrength = Math.min(1, firefly.alpha * 1.4);
- gradient.addColorStop(0, `rgba(0, 0, 0, ${lightStrength})`);
- gradient.addColorStop(0.35, `rgba(0, 0, 0, ${lightStrength * 0.6})`);
+ // 阈值化：alpha < 0.08 时不挖洞 → 萤火虫暗阶段真正熄灭，不再持续发光
+ const coreStrength = Math.min(1, Math.max(0, firefly.alpha - 0.08) * 2.8);
+ gradient.addColorStop(0, `rgba(0, 0, 0, ${coreStrength})`);
+ gradient.addColorStop(0.20, `rgba(0, 0, 0, ${coreStrength * 0.85})`);
+ gradient.addColorStop(0.45, `rgba(0, 0, 0, ${coreStrength * 0.55})`);
+ gradient.addColorStop(0.75, `rgba(0, 0, 0, ${coreStrength * 0.20})`);
  gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
  ctx.beginPath();
  ctx.arc(firefly.x, firefly.y, lightRadius, 0, Math.PI * 2);

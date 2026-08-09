@@ -34,6 +34,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -200,9 +201,14 @@ public class CampfireServiceImpl implements CampfireService {
 
         List<Long> bannedMessageIds = reportMapper.selectApprovedTargetIds("campfire_message");
 
+        // 篝火聊天记录超过 24 小时前端不显示（数据库不删除，保留审计/申诉取证）
+        // 管理员通过 selectById 查单条审核申诉时不受此限制
+        LocalDateTime threshold = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusHours(24);
+
         Page<CampfireMessage> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<CampfireMessage> wrapper = new LambdaQueryWrapper<CampfireMessage>()
                 .eq(CampfireMessage::getCampfireId, campfireId)
+                .ge(CampfireMessage::getCreatedAt, threshold)
                 .notIn(bannedMessageIds != null && !bannedMessageIds.isEmpty(), CampfireMessage::getId, bannedMessageIds)
                 .orderByAsc(CampfireMessage::getCreatedAt);
         IPage<CampfireMessage> result = campfireMessageMapper.selectPage(pageParam, wrapper);

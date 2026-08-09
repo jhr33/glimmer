@@ -20,16 +20,20 @@ public class DeepSeekProperties {
     /** API Key（部署时通过环境变量 DEEPSEEK_API_KEY 注入） */
     private String apiKey;
 
-    /** 模型名称，默认 deepseek-v3 */
-    private String model = "deepseek-v3";
+    /** 模型名称，默认 deepseek-v4-flash */
+    private String model = "deepseek-v4-flash";
 
     /** 上下文消息最大条数（见开发文档 §3.4.4） */
     private int maxContextMessages = 20;
 
-    /** 系统提示词 */
-    private String systemPrompt = "你是 glimmer 网站的温暖倾听者，用温柔、有同理心的语言陪伴用户。回答要有共情力，避免说教，鼓励用户表达感受。";
+    /** 系统提示词（必须通过 application.yml 配置，无默认 fallback） */
+    private String systemPrompt;
 
-    /** 摘要+关键信息提取 prompt（解锁时调用，%s 为对话内容） */
+    /**
+     * 摘要+关键信息提取 prompt（解锁时调用，%s 为对话内容）。
+     * 功能性提示词，与 AiConversationServiceImpl.generateSummary 的 JSON 解析逻辑强耦合
+     * （依赖返回 {"summary":"...","keyInfo":{...}} 结构），不宜通过 yml 覆盖。
+     */
     private String summaryPrompt =
         "请分析以下对话，提取信息。严格返回JSON格式（不要markdown代码块、不要多余文字）：\n" +
         "{\"summary\":\"2-3句话摘要，包含重要事情、情绪状态、关键信息\",\"keyInfo\":{\"字段名\":\"值\"}}\n" +
@@ -38,10 +42,4 @@ public class DeepSeekProperties {
         "- keyInfo提取3-5个关键信息项，字段名用英文简写，值用中文\n" +
         "- 示例：{\"summary\":\"用户正在准备考研，最近压力大，家里养了一只猫\",\"keyInfo\":{\"studying\":\"考研\",\"pet\":\"猫\",\"mood\":\"压力大\"}}\n\n" +
         "对话内容：\n%s";
-
-    /** 每次解锁增加的轮次 */
-    private int unlockQuotaStep = 10;
-
-    /** 免费会话每日轮次上限 */
-    private int freeDailyQuota = 10;
 }
