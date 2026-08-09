@@ -27,7 +27,6 @@ public enum ErrorCode {
     ALREADY_SIGNED_IN(4004, "今日已签到"),
 
     // 漂流瓶相关 4005-4008
-    CANNOT_PICK_OWN_BOTTLE(4005, "不能捡自己的瓶子"),
     ALREADY_PICKED_BOTTLE(4006, "已捡过该瓶子"),
     ALREADY_REPLIED_BOTTLE(4007, "已回复过该瓶子"),
     ALREADY_THANKED(4008, "已感谢过该内容"),

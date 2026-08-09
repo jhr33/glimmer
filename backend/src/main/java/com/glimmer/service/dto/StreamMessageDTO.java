@@ -72,21 +72,6 @@ public class StreamMessageDTO {
     }
 
     /**
-     * 创建结束消息
-     */
-    public static StreamMessageDTO finalMessage(AiMessageVO aiMessage, AiMessageVO userMessage,
-                                                 String conversationStatus, Integer messageCount, Integer maxMessages) {
-        StreamMessageDTO dto = new StreamMessageDTO();
-        dto.setType("final");
-        dto.setAiMessage(aiMessage);
-        dto.setUserMessage(userMessage);
-        dto.setConversationStatus(conversationStatus);
-        dto.setMessageCount(messageCount);
-        dto.setMaxMessages(maxMessages);
-        return dto;
-    }
-
-    /**
      * 创建结束消息（含配额信息，用于前端额度展示与解锁弹窗触发）
      */
     public static StreamMessageDTO finalMessage(AiMessageVO aiMessage, AiMessageVO userMessage,

@@ -7,7 +7,6 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
-import com.glimmer.common.util.RedisUtils;
 import com.glimmer.config.ai.DeepSeekProperties;
 import com.glimmer.entity.AiConversation;
 import com.glimmer.entity.AiMessage;
@@ -676,19 +675,6 @@ public class AiConversationServiceImpl implements AiConversationService {
             emitter.send(SseEmitter.event().data(json));
         } catch (Exception e) {
             log.error("发送增量消息失败", e);
-        }
-    }
-
-    private void sendFinal(SseEmitter emitter, ObjectMapper objectMapper, AiMessageVO aiMessage, AiMessageVO userMessage,
-                           String conversationStatus, Integer messageCount, Integer maxMessages) {
-        try {
-            StreamMessageDTO dto = StreamMessageDTO.finalMessage(aiMessage, userMessage, conversationStatus, messageCount, maxMessages);
-            String json = objectMapper.writeValueAsString(dto);
-            emitter.send(SseEmitter.event().data(json));
-            emitter.complete();
-        } catch (Exception e) {
-            log.error("发送最终消息失败", e);
-            emitter.completeWithError(e);
         }
     }
 
