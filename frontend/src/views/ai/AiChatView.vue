@@ -378,7 +378,7 @@ onUnmounted(() => {
     <!-- 会话列表 -->
     <div v-if="scene === 'list'" class="list-scene">
       <div class="scene-header">
-        <h2 class="page-title">🤖 AI 对话</h2>
+        <h2 class="page-title">✨ 树洞</h2>
         <el-button
           type="primary"
           :disabled="isBanned"

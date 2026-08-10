@@ -42,4 +42,13 @@ public class DeepSeekProperties {
         "- keyInfo提取3-5个关键信息项，字段名用英文简写，值用中文\n" +
         "- 示例：{\"summary\":\"用户正在准备考研，最近压力大，家里养了一只猫\",\"keyInfo\":{\"studying\":\"考研\",\"pet\":\"猫\",\"mood\":\"压力大\"}}\n\n" +
         "对话内容：\n%s";
+
+    /** 回音机器人：漂流瓶回复提示词，%s 为瓶子内容 */
+    private String echoBottlePrompt;
+
+    /** 回音机器人：篝火回应用户发言提示词，%s 为最近对话上下文 */
+    private String echoCampfireReplyPrompt;
+
+    /** 回音机器人：篝火冷场提新话题提示词，%s 为篝火名称 */
+    private String echoCampfirePrompt;
 }

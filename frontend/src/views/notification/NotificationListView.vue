@@ -91,7 +91,11 @@ function handleTypeChange(key) {
 }
 
 async function handleReadOne(item) {
-  if (isRead(item)) return
+  if (isRead(item)) {
+    // 已读时点击 → 跳转到对应页面
+    handleNotificationClick(item)
+    return
+  }
   try {
     await markRead(item.id)
     // 更新本地状态
@@ -101,6 +105,20 @@ async function handleReadOne(item) {
     await notificationStore.fetchUnreadCount()
   } catch (e) {
     // 错误已由拦截器统一提示
+  }
+  // 标记已读后也跳转
+  handleNotificationClick(item)
+}
+
+// 点击通知项跳转：bottle_reply → 漂流瓶页面并打开详情
+function handleNotificationClick(item) {
+  if (item.type === 'bottle_reply' || item.type === 'bottle_thank') {
+    const refId = item.refId ?? item.ref_id
+    if (refId) {
+      router.push({ path: '/driftBottle', query: { id: refId } })
+    } else {
+      router.push('/driftBottle')
+    }
   }
 }
 

@@ -25,6 +25,8 @@ public class PunishmentServiceImpl implements PunishmentService {
 
     /** 封禁状态缓存 key：user:ban:{userId}，值为 "1"=封禁 / "0"=未封禁 */
     private static final String CACHE_KEY_USER_BANNED = "user:ban:%d";
+    /** 永久封禁缓存 key：user:perm_ban:{userId}，值为 "1"=永久封禁 / "0"=非永久封禁 */
+    private static final String CACHE_KEY_USER_PERM_BANNED = "user:perm_ban:%d";
     /** 封禁状态缓存 TTL：5 分钟（处罚变更时主动失效） */
     private static final Duration BANNED_CACHE_TTL = Duration.ofMinutes(5);
 
@@ -39,10 +41,11 @@ public class PunishmentServiceImpl implements PunishmentService {
     }
 
     /**
-     * 清除用户封禁状态缓存
+     * 清除用户封禁状态缓存（同时清除限制发言缓存和永久封禁缓存）
      */
     private void evictBannedCache(Long userId) {
         redis.delete(String.format(CACHE_KEY_USER_BANNED, userId));
+        redis.delete(String.format(CACHE_KEY_USER_PERM_BANNED, userId));
     }
 
     @Override
@@ -203,6 +206,23 @@ public class PunishmentServiceImpl implements PunishmentService {
         // 3. 回填缓存
         redis.set(cacheKey, banned ? "1" : "0", BANNED_CACHE_TTL);
         return banned;
+    }
+
+    @Override
+    public boolean isUserPermanentlyBanned(Long userId) {
+        String cacheKey = String.format(CACHE_KEY_USER_PERM_BANNED, userId);
+        // 1. 先查 Redis 缓存
+        String cached = redis.get(cacheKey);
+        if (cached != null) {
+            return "1".equals(cached);
+        }
+        // 2. 缓存未命中，查 DB：只检查是否有 BAN 类型的生效处罚
+        List<Punishment> activePunishments = punishmentMapper.selectActiveByUserId(userId);
+        boolean permBanned = activePunishments.stream()
+                .anyMatch(p -> Punishment.TYPE_BAN.equals(p.getType()));
+        // 3. 回填缓存
+        redis.set(cacheKey, permBanned ? "1" : "0", BANNED_CACHE_TTL);
+        return permBanned;
     }
 
     @Override

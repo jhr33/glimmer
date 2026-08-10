@@ -10,6 +10,11 @@ export function updateNickname(data) {
   return request({ url: '/user/nickname', method: 'put', data })
 }
 
+// 修改密码（一天限一次）
+export function changePassword(data) {
+  return request({ url: '/user/password', method: 'put', data })
+}
+
 // 获取萤火花园数据
 export function getGarden(userId) {
   return request({ url: `/user/${userId}/garden`, method: 'get' })

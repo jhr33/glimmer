@@ -1,6 +1,7 @@
 package com.glimmer.service;
 
 import com.glimmer.common.response.PageResult;
+import com.glimmer.service.dto.ChangePasswordRequest;
 import com.glimmer.service.dto.GardenVO;
 import com.glimmer.service.dto.UpdateNicknameRequest;
 import com.glimmer.service.dto.UserAdminVO;
@@ -21,6 +22,11 @@ public interface UserService {
      * 修改昵称
      */
     void updateNickname(Long userId, UpdateNicknameRequest request);
+
+    /**
+     * 修改密码（一天限一次）
+     */
+    void changePassword(Long userId, ChangePasswordRequest request);
 
     /**
      * 查看他人主页（仅公开信息）

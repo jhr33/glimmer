@@ -28,6 +28,7 @@ import com.glimmer.service.NotificationService;
 import com.glimmer.service.PunishmentService;
 import com.glimmer.mapper.PunishmentMapper;
 import com.glimmer.service.dto.AppealCheckResult;
+import com.glimmer.service.dto.AppealGroupVO;
 import com.glimmer.service.dto.FeedbackVO;
 import com.glimmer.service.dto.PunishmentVO;
 import com.glimmer.service.dto.ReportVO;
@@ -37,8 +38,11 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -192,15 +196,136 @@ public class FeedbackServiceImpl implements FeedbackService {
     }
 
     @Override
-    public PageResult<FeedbackVO> getMyFeedbacks(Long userId, int page, int size) {
+    public PageResult<FeedbackVO> getMyFeedbacks(Long userId, int page, int size, String type) {
         Page<Feedback> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<Feedback> wrapper = new LambdaQueryWrapper<Feedback>()
                 .eq(Feedback::getUserId, userId)
+                .eq(StringUtils.hasText(type), Feedback::getType, type)
                 .orderByDesc(Feedback::getCreatedAt);
 
         IPage<Feedback> result = feedbackMapper.selectPage(pageParam, wrapper);
         List<FeedbackVO> list = toVOList(result.getRecords());
         return new PageResult<>(list, result.getTotal(), page, size);
+    }
+
+    @Override
+    public List<AppealGroupVO> getMyAppealGroups(Long userId) {
+        // 查询当前用户所有申诉记录，按时间正序（分组后组内保持正序）
+        List<Feedback> allAppeals = feedbackMapper.selectList(
+                new LambdaQueryWrapper<Feedback>()
+                        .eq(Feedback::getUserId, userId)
+                        .eq(Feedback::getType, "appeal")
+                        .orderByAsc(Feedback::getCreatedAt));
+        if (allAppeals.isEmpty()) {
+            return Collections.emptyList();
+        }
+
+        // 按 groupKey 分组：reportId 优先，其次 punishmentId，都为空则单独一组
+        // 使用 LinkedHashMap 保持插入顺序（先出现的组在前），后面会再按最新时间重排
+        Map<String, List<Feedback>> grouped = new LinkedHashMap<>();
+        for (Feedback f : allAppeals) {
+            String key;
+            if (f.getReportId() != null) {
+                key = "r_" + f.getReportId();
+            } else if (f.getPunishmentId() != null) {
+                key = "p_" + f.getPunishmentId();
+            } else {
+                key = "none_" + f.getId();
+            }
+            grouped.computeIfAbsent(key, k -> new ArrayList<>()).add(f);
+        }
+
+        // 批量查所有涉及到的 report，减少 N+1 查询
+        Set<Long> reportIds = allAppeals.stream()
+                .map(Feedback::getReportId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Report> reportMap = reportIds.isEmpty()
+                ? Collections.emptyMap()
+                : reportMapper.selectBatchIds(reportIds).stream()
+                .collect(Collectors.toMap(Report::getId, r -> r, (a, b) -> a));
+
+        // 批量关联用户名（申诉提交者都是当前用户，但 toVOList 需要用户信息）
+        Map<Long, User> userMap = userId == null ? Collections.emptyMap()
+                : Collections.singletonMap(userId, userMapper.selectById(userId));
+
+        // 批量查询所有涉及的处罚单，减少 N+1 查询
+        Set<Long> punishmentIds = allAppeals.stream()
+                .map(Feedback::getPunishmentId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        Map<Long, Punishment> punishmentMap = punishmentIds.isEmpty()
+                ? Collections.emptyMap()
+                : punishmentMapper.selectBatchIds(punishmentIds).stream()
+                .collect(Collectors.toMap(Punishment::getId, p -> p, (a, b) -> a));
+
+        // 组装 AppealGroupVO
+        List<AppealGroupVO> groups = new ArrayList<>();
+        for (Map.Entry<String, List<Feedback>> entry : grouped.entrySet()) {
+            List<Feedback> appeals = entry.getValue();
+            Feedback latest = appeals.get(appeals.size() - 1);
+            Feedback first = appeals.get(0);
+
+            AppealGroupVO vo = new AppealGroupVO();
+            vo.setGroupKey(entry.getKey());
+            vo.setReportId(latest.getReportId());
+            vo.setPunishmentId(latest.getPunishmentId());
+            vo.setAppealCount(appeals.size());
+            vo.setLatestStatus(latest.getStatus());
+            vo.setLatestCreatedAt(latest.getCreatedAt());
+            vo.setFirstCreatedAt(first.getCreatedAt());
+
+            // 填充被举报内容和场所
+            Report report = latest.getReportId() != null ? reportMap.get(latest.getReportId()) : null;
+            if (report != null) {
+                vo.setTargetType(report.getTargetType());
+                vo.setReportedContent(getReportedContent(report.getTargetType(), report.getTargetId()));
+                vo.setLocation(describeLocation(report.getTargetType(), report.getTargetId()));
+            } else {
+                // 无举报关联时，尝试从处罚单来源获取
+                if (latest.getPunishmentId() != null) {
+                    Punishment punishment = punishmentMapper.selectById(latest.getPunishmentId());
+                    if (punishment != null
+                            && Punishment.SOURCE_REPORT.equals(punishment.getSourceType())
+                            && punishment.getSourceId() != null) {
+                        Report linkedReport = reportMapper.selectById(punishment.getSourceId());
+                        if (linkedReport != null) {
+                            vo.setReportId(linkedReport.getId());
+                            vo.setTargetType(linkedReport.getTargetType());
+                            vo.setReportedContent(getReportedContent(linkedReport.getTargetType(), linkedReport.getTargetId()));
+                            vo.setLocation(describeLocation(linkedReport.getTargetType(), linkedReport.getTargetId()));
+                        }
+                    }
+                }
+                if (vo.getReportedContent() == null) {
+                    vo.setReportedContent("未知内容");
+                }
+            }
+
+            // 组内申诉明细（按时间正序），每条申诉填充对应的处罚单信息（显示申诉后处罚结果）
+            List<FeedbackVO> appealVOs = appeals.stream()
+                    .map(f -> {
+                        FeedbackVO fvo = toVO(f, userMap);
+                        if (f.getPunishmentId() != null) {
+                            fvo.setPunishment(toPunishmentVO(punishmentMap.get(f.getPunishmentId())));
+                        }
+                        return fvo;
+                    })
+                    .collect(Collectors.toList());
+            vo.setAppeals(appealVOs);
+
+            // 分组级别填充原始处罚单信息
+            if (latest.getPunishmentId() != null) {
+                vo.setPunishment(toPunishmentVO(punishmentMap.get(latest.getPunishmentId())));
+            }
+
+            groups.add(vo);
+        }
+
+        // 按最新申诉时间倒序
+        groups.sort(Comparator.comparing(AppealGroupVO::getLatestCreatedAt, Comparator.nullsLast(Comparator.reverseOrder())));
+
+        return groups;
     }
 
     @Override
@@ -629,6 +754,28 @@ public class FeedbackServiceImpl implements FeedbackService {
             case "EXPIRED": return "已过期";
             default: return status;
         }
+    }
+
+    /**
+     * 将 Punishment 实体转为 PunishmentVO（含类型/状态描述）
+     */
+    private PunishmentVO toPunishmentVO(Punishment punishment) {
+        if (punishment == null) {
+            return null;
+        }
+        PunishmentVO vo = new PunishmentVO();
+        vo.setId(punishment.getId());
+        vo.setUserId(punishment.getUserId());
+        vo.setType(punishment.getType());
+        vo.setTypeDescription(describePunishmentType(punishment.getType()));
+        vo.setReason(punishment.getReason());
+        vo.setStatus(punishment.getStatus());
+        vo.setStatusDescription(describePunishmentStatus(punishment.getStatus()));
+        vo.setStartAt(punishment.getStartAt());
+        vo.setEndAt(punishment.getEndAt());
+        vo.setSourceType(punishment.getSourceType());
+        vo.setSourceId(punishment.getSourceId());
+        return vo;
     }
 
     private String getReportedContent(String targetType, Long targetId) {

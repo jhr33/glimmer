@@ -36,8 +36,11 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -212,8 +215,11 @@ public class CampfireServiceImpl implements CampfireService {
                 .notIn(bannedMessageIds != null && !bannedMessageIds.isEmpty(), CampfireMessage::getId, bannedMessageIds)
                 .orderByAsc(CampfireMessage::getCreatedAt);
         IPage<CampfireMessage> result = campfireMessageMapper.selectPage(pageParam, wrapper);
-        List<CampfireMessageVO> list = result.getRecords().stream()
+        List<CampfireMessage> records = result.getRecords();
+        List<CampfireMessageVO> list = records.stream()
                 .map(this::toMessageVO).collect(Collectors.toList());
+        // 批量注入 isFromBot（避免 N+1）
+        fillIsFromBotForMessages(list, records);
         return new PageResult<>(list, result.getTotal(), page, size);
     }
 
@@ -239,12 +245,15 @@ public class CampfireServiceImpl implements CampfireService {
         String identityName = resolveIdentityName(user, campfireId, displayMode);
         CampfireMember member;
 
+        LocalDateTime now = LocalDateTime.now();
+        
         if (isMember(userId, campfireId)) {
-            // 已加入则更新身份名称（允许用户在每次进入时更换）
+            // 已加入则更新身份名称和最后活跃时间
             campfireMemberMapper.update(null, new LambdaUpdateWrapper<CampfireMember>()
                     .eq(CampfireMember::getCampfireId, campfireId)
                     .eq(CampfireMember::getUserId, userId)
-                    .set(CampfireMember::getAnonymousName, identityName));
+                    .set(CampfireMember::getAnonymousName, identityName)
+                    .set(CampfireMember::getLastActiveAt, now));
             // 读取更新后的成员
             member = campfireMemberMapper.selectOne(new LambdaQueryWrapper<CampfireMember>()
                     .eq(CampfireMember::getCampfireId, campfireId)
@@ -261,7 +270,8 @@ public class CampfireServiceImpl implements CampfireService {
             member.setCampfireId(campfireId);
             member.setUserId(userId);
             member.setAnonymousName(identityName);
-            member.setJoinedAt(LocalDateTime.now());
+            member.setJoinedAt(now);
+            member.setLastActiveAt(now);
             campfireMemberMapper.insert(member);
             log.info("加入篝火成功: userId={}, campfireId={}, anonymousName={}", userId, campfireId, identityName);
         }
@@ -373,7 +383,13 @@ public class CampfireServiceImpl implements CampfireService {
         message.setCreatedAt(now);
         campfireMessageMapper.insert(message);
 
+        // 更新成员最后活跃时间
+        updateMemberLastActive(userId, campfireId, now);
+
         CampfireMessageVO vo = toMessageVO(message);
+        // 单条消息也注入 isFromBot（sendMessage 入口 userId 已知是本人，但为 bot 账号发言场景兜底）
+        Set<Long> ids = Set.of(userId);
+        vo.setIsFromBot(Boolean.TRUE.equals(selectBotUserIdSet(ids).contains(userId)));
 
         // 6. 通过 WebSocket 推送到 /topic/campfire/{campfireId}
         messagingTemplate.convertAndSend("/topic/campfire/" + campfireId, vo);
@@ -396,6 +412,16 @@ public class CampfireServiceImpl implements CampfireService {
             throw new BusinessException(ErrorCode.FORBIDDEN, "未加入该篝火");
         }
         return member;
+    }
+
+    /**
+     * 更新成员最后活跃时间
+     */
+    private void updateMemberLastActive(Long userId, Long campfireId, LocalDateTime time) {
+        campfireMemberMapper.update(null, new LambdaUpdateWrapper<CampfireMember>()
+                .eq(CampfireMember::getCampfireId, campfireId)
+                .eq(CampfireMember::getUserId, userId)
+                .set(CampfireMember::getLastActiveAt, time));
     }
 
     /**
@@ -475,5 +501,38 @@ public class CampfireServiceImpl implements CampfireService {
         vo.setContent(message.getContent());
         vo.setCreatedAt(message.getCreatedAt());
         return vo;
+    }
+
+    /**
+     * 批量给消息 VO 填充 isFromBot（避免 N+1 查用户）
+     *
+     * @param list     要填充的 VO 列表
+     * @param messages 原始消息实体列表（来源与 list 索引一一对应）
+     */
+    private void fillIsFromBotForMessages(List<CampfireMessageVO> list, List<CampfireMessage> messages) {
+        if (list == null || list.isEmpty()) return;
+        Set<Long> userIds = messages.stream()
+                .map(CampfireMessage::getUserId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toCollection(HashSet::new));
+        Set<Long> botIds = selectBotUserIdSet(userIds);
+        for (int i = 0; i < list.size() && i < messages.size(); i++) {
+            Long uid = messages.get(i).getUserId();
+            list.get(i).setIsFromBot(uid != null && botIds.contains(uid));
+        }
+    }
+
+    /**
+     * 从给定用户ID集合里过滤出「AI 机器人（回音）」的用户ID集合。
+     * 判断条件：username == bot_echo 或 role == bot。
+     */
+    private Set<Long> selectBotUserIdSet(Set<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Set.of();
+        }
+        return userMapper.selectBatchIds(new HashSet<>(userIds)).stream()
+                .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
+                .map(User::getId)
+                .collect(Collectors.toSet());
     }
 }

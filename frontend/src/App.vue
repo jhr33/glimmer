@@ -1,9 +1,11 @@
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ArrowDown, Bell } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { useNotificationStore } from '@/stores/notification'
+import { getAutoMode, setAutoMode as setAutoModeApi } from '@/api/echo'
 
 const router = useRouter()
 const route = useRoute()
@@ -16,6 +18,37 @@ const isLoggedIn = computed(() => userStore.isLoggedIn)
 const isAdmin = computed(() => userStore.isAdmin)
 const unreadCount = computed(() => notificationStore.unreadCount)
 
+// 回音托管开关相关：仅回音账号自身可见可操作
+const echoAutoMode = ref(false)
+const echoLoading = ref(false)
+const canControlEcho = computed(() => {
+  const role = userStore.userInfo?.role
+  return userStore.userInfo?.username === 'bot_echo' || role === 'bot'
+})
+
+async function fetchEchoMode() {
+  if (!canControlEcho.value) return
+  try {
+    const res = await getAutoMode()
+    echoAutoMode.value = res.data?.enabled || false
+  } catch (e) {
+    echoAutoMode.value = false
+  }
+}
+
+async function toggleEchoMode(val) {
+  echoLoading.value = true
+  try {
+    await setAutoModeApi(val)
+    ElMessage.success(val ? '回音托管已开启' : '回音托管已关闭')
+  } catch (e) {
+    echoAutoMode.value = !val
+    ElMessage.error('操作失败')
+  } finally {
+    echoLoading.value = false
+  }
+}
+
 // 顶部导航菜单
 const menuItems = computed(() => {
   const items = [
@@ -23,11 +56,11 @@ const menuItems = computed(() => {
     { index: '/driftBottle', label: '漂流瓶' },
     { index: '/letter', label: '信件' },
     { index: '/campfire', label: '篝火' },
-    { index: '/ai', label: 'AI 对话' },
+    { index: '/ai', label: '树洞' },
     { index: '/garden', label: '花园' },
     { index: '/announcements', label: '公告' },
     { index: '/notifications', label: '通知', isNotification: true },
-    { index: '/feedback', label: '意见反馈' }
+    { index: '/feedback', label: '意见反馈与申诉' }
   ]
   if (isAdmin.value) {
     items.push({ index: '/admin', label: '管理后台' })
@@ -83,6 +116,8 @@ onMounted(async () => {
     } catch (e) {
       // 拉取失败时静默处理（可能token过期）
     }
+    // 拉取回音托管状态
+    fetchEchoMode()
   }
   startPolling()
 })
@@ -127,6 +162,17 @@ onUnmounted(() => {
           </el-menu>
 
           <div class="header-actions">
+            <!-- 回音托管开关：仅管理员/机器人可见 -->
+            <div v-if="canControlEcho" class="echo-toggle">
+              <span class="echo-toggle-label">回音托管</span>
+              <el-switch
+                v-model="echoAutoMode"
+                :loading="echoLoading"
+                active-text="开"
+                inactive-text="关"
+                @change="toggleEchoMode"
+              />
+            </div>
             <el-dropdown @command="(cmd) => cmd === 'logout' && handleLogout()">
               <span class="user-dropdown-trigger">
                 {{ userStore.userInfo?.nickname || userStore.userInfo?.username || '旅人' }}
@@ -207,6 +253,20 @@ onUnmounted(() => {
   align-items: center;
   gap: 16px;
   flex-shrink: 0;
+}
+.echo-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: #fff8e6;
+  border-radius: 16px;
+  border: 1px solid #ffe6a8;
+}
+.echo-toggle-label {
+  font-size: 12px;
+  color: #9a6b1a;
+  font-weight: 500;
 }
 .menu-badge {
   display: inline-flex !important;

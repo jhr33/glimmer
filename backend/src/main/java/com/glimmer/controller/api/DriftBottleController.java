@@ -48,9 +48,10 @@ public class DriftBottleController {
 
     @Operation(summary = "捡漂流瓶（随机返回1个瓶子，不含内容）")
     @PostMapping("/api/bottles/pick")
-    public Result<Map<String, Object>> pickBottle() {
+    public Result<Map<String, Object>> pickBottle(
+            @RequestParam(required = false, defaultValue = "public") String mode) {
         Long userId = SecurityUtils.getCurrentUserId();
-        BottlePickVO vo = driftBottleService.pickBottle(userId);
+        BottlePickVO vo = driftBottleService.pickBottle(userId, mode);
         Map<String, Object> data = new HashMap<>();
         if (vo == null) {
             data.put("found", false);
@@ -118,13 +119,18 @@ public class DriftBottleController {
         return Result.success();
     }
 
-    @Operation(summary = "我扔出的瓶子列表（分页）")
+    @Operation(summary = "我扔出的瓶子列表（分页，支持关键词+时间检索）")
     @GetMapping("/api/bottles/mine")
     public Result<PageResult<BottleVO>> getMyBottles(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String timeRange,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate) {
         Long userId = SecurityUtils.getCurrentUserId();
-        PageResult<BottleVO> result = driftBottleService.getMyBottles(userId, page, size);
+        PageResult<BottleVO> result = driftBottleService.getMyBottles(userId, page, size,
+                keyword, timeRange, startDate, endDate);
         return Result.success(result);
     }
 

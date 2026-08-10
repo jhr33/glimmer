@@ -8,7 +8,7 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 /**
- * 篝火成员表（campfire_member）—— 新增表
+ * 篝火成员表（campfire_member）
  */
 @Data
 @TableName("campfire_member")
@@ -27,4 +27,10 @@ public class CampfireMember {
     private String anonymousName;
 
     private LocalDateTime joinedAt;
+
+    /**
+     * 最后活跃时间（用户在篝火页面有任何操作时更新）
+     * 超过 10 分钟无活动视为离线，自动退出
+     */
+    private LocalDateTime lastActiveAt;
 }

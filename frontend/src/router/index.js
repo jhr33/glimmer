@@ -55,7 +55,7 @@ const routes = [
     path: '/ai',
     name: 'ai',
     component: () => import('@/views/ai/AiChatView.vue'),
-    meta: { requiresAuth: true, title: 'AI 对话' }
+    meta: { requiresAuth: true, title: '树洞' }
   },
   {
     path: '/garden',

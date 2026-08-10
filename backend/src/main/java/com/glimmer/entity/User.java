@@ -19,6 +19,9 @@ public class User {
 
     private String password;
 
+    /** 最近一次修改密码时间（Asia/Shanghai 时区），用于限制一天只能修改一次 */
+    private LocalDateTime passwordChangedAt;
+
     private String nickname;
 
     private String anonymousName;

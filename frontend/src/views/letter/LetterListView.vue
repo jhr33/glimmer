@@ -11,6 +11,47 @@ const list = ref([])
 const total = ref(0)
 const page = reactive({ current: 1, size: 10 })
 
+// 检索条件
+const keyword = ref('')
+const timeRange = ref('') // '' 全部 / today / week / month / custom
+const dateRange = ref([]) // [startDate, endDate]
+
+function formatYMD(d) {
+  if (!d) return ''
+  const dt = new Date(d)
+  const y = dt.getFullYear()
+  const m = String(dt.getMonth() + 1).padStart(2, '0')
+  const dd = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
+
+function buildParams() {
+  const params = { page: page.current, size: page.size }
+  if (keyword.value?.trim()) {
+    params.keyword = keyword.value.trim()
+  }
+  if (timeRange.value) {
+    params.timeRange = timeRange.value
+    if (timeRange.value === 'custom' && Array.isArray(dateRange.value) && dateRange.value.length === 2) {
+      params.startDate = formatYMD(dateRange.value[0])
+      params.endDate = formatYMD(dateRange.value[1])
+    }
+  }
+  return params
+}
+
+function applySearch() {
+  page.current = 1
+  fetchList()
+}
+function resetSearch() {
+  keyword.value = ''
+  timeRange.value = ''
+  dateRange.value = []
+  page.current = 1
+  fetchList()
+}
+
 // 兼容分页结构
 function pickList(data) {
   if (!data) return []
@@ -53,7 +94,7 @@ function preview(content) {
 async function fetchList() {
   loading.value = true
   try {
-    const params = { page: page.current, size: page.size }
+    const params = buildParams()
     const res = activeTab.value === 'inbox' ? await getInbox(params) : await getSent(params)
     const data = res.data
     list.value = pickList(data)
@@ -93,13 +134,52 @@ onMounted(() => {
     </div>
 
     <el-card shadow="never" class="list-card">
+      <!-- 搜索栏：关键词 + 时间范围 -->
+      <div class="search-bar">
+        <el-input
+          v-model="keyword"
+          placeholder="搜索信件内容关键词"
+          clearable
+          class="search-input"
+          @keyup.enter="applySearch"
+        >
+          <template #prefix>🔍</template>
+        </el-input>
+        <el-select
+          v-model="timeRange"
+          placeholder="按时间筛选"
+          clearable
+          class="time-select"
+          @change="applySearch"
+        >
+          <el-option label="全部时间" value="" />
+          <el-option label="今天" value="today" />
+          <el-option label="近7天" value="week" />
+          <el-option label="近30天" value="month" />
+          <el-option label="自定义" value="custom" />
+        </el-select>
+        <el-date-picker
+          v-if="timeRange === 'custom'"
+          v-model="dateRange"
+          type="daterange"
+          range-separator="至"
+          start-placeholder="开始日期"
+          end-placeholder="结束日期"
+          value-format="YYYY-MM-DD"
+          class="date-range"
+          @change="applySearch"
+        />
+        <el-button type="primary" @click="applySearch">搜索</el-button>
+        <el-button @click="resetSearch">重置</el-button>
+      </div>
+
       <el-tabs v-model="activeTab" @tab-change="handleTabChange">
         <el-tab-pane label="收件箱" name="inbox" />
         <el-tab-pane label="发件箱" name="sent" />
       </el-tabs>
 
       <div v-loading="loading">
-        <el-empty v-if="!loading && list.length === 0" description="暂无信件" />
+        <el-empty v-if="!loading && list.length === 0" description="暂无信件或无匹配结果" />
 
         <ul v-else class="letter-list">
           <li
@@ -169,6 +249,28 @@ onMounted(() => {
   margin: 0;
   color: #909399;
   font-size: 13px;
+}
+/* 检索栏 */
+.search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  background: #faf7ee;
+  border-radius: 8px;
+  border: 1px solid #f0e6d2;
+}
+.search-input {
+  max-width: 240px;
+}
+.time-select {
+  width: 140px;
+}
+.date-range {
+  width: auto;
+  min-width: 260px;
 }
 .list-card {
   border-radius: 10px;

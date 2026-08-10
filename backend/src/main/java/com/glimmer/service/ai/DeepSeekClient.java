@@ -89,7 +89,11 @@ public class DeepSeekClient {
                 content = "（AI 暂未返回内容）";
             }
             log.info("DeepSeek 调用成功: model={}, usage={}", properties.getModel(), response.getUsage());
-            return new ChatResult(content, response.getUsage() != null ? response.getUsage().getTotalTokens() : 0);
+            int totalTokens = 0;
+            if (response.getUsage() != null && response.getUsage().getTotalTokens() != null) {
+                totalTokens = response.getUsage().getTotalTokens();
+            }
+            return new ChatResult(content, totalTokens);
         } catch (BusinessException e) {
             throw e;
         } catch (HttpStatusCodeException e) {

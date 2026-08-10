@@ -15,6 +15,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
+import java.util.List;
+import java.util.Map;
+
 /**
  * 代币接口（签到、流水查询）
  * 见开发文档 §4.5
@@ -44,6 +48,25 @@ public class TokenController {
         Long userId = SecurityUtils.getCurrentUserId();
         SignInStatusResponse response = tokenService.getSignInStatus(userId);
         return Result.success(response);
+    }
+
+    @Operation(summary = "查询某月签到日历")
+    @GetMapping("/sign-in/calendar")
+    public Result<Map<String, Object>> getSignInCalendar(
+            @RequestParam(defaultValue = "0") int year,
+            @RequestParam(defaultValue = "0") int month) {
+        Long userId = SecurityUtils.getCurrentUserId();
+        // 默认取当前年月
+        LocalDate now = LocalDate.now(java.time.ZoneId.of("Asia/Shanghai"));
+        if (year <= 0) year = now.getYear();
+        if (month <= 0 || month > 12) month = now.getMonthValue();
+        List<LocalDate> dates = tokenService.getMonthlySignInDates(userId, year, month);
+        return Result.success(Map.of(
+                "year", year,
+                "month", month,
+                "signedDates", dates,
+                "signedCount", dates.size()
+        ));
     }
 
     @Operation(summary = "代币流水查询（分页，可按类型/来源筛选）")

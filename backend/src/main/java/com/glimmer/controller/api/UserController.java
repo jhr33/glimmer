@@ -3,6 +3,7 @@ package com.glimmer.controller.api;
 import com.glimmer.common.response.Result;
 import com.glimmer.common.util.SecurityUtils;
 import com.glimmer.service.UserService;
+import com.glimmer.service.dto.ChangePasswordRequest;
 import com.glimmer.service.dto.GardenVO;
 import com.glimmer.service.dto.UpdateNicknameRequest;
 import com.glimmer.service.dto.UserProfileVO;
@@ -45,6 +46,14 @@ public class UserController {
     public Result<Void> updateNickname(@Valid @RequestBody UpdateNicknameRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();
         userService.updateNickname(userId, request);
+        return Result.success();
+    }
+
+    @Operation(summary = "修改密码（一天限一次）")
+    @PutMapping("/password")
+    public Result<Void> changePassword(@Valid @RequestBody ChangePasswordRequest request) {
+        Long userId = SecurityUtils.getCurrentUserId();
+        userService.changePassword(userId, request);
         return Result.success();
     }
 

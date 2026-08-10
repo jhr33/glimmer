@@ -26,6 +26,10 @@ public enum ErrorCode {
     TOKEN_NOT_ENOUGH(4003, "代币不足"),
     ALREADY_SIGNED_IN(4004, "今日已签到"),
 
+    // 密码修改相关 4022-4023
+    PASSWORD_NOT_MATCH(4022, "原密码错误"),
+    PASSWORD_CHANGE_LIMITED(4023, "一天只能修改一次密码，请明天再试"),
+
     // 漂流瓶相关 4005-4008
     ALREADY_PICKED_BOTTLE(4006, "已捡过该瓶子"),
     ALREADY_REPLIED_BOTTLE(4007, "已回复过该瓶子"),

@@ -30,4 +30,12 @@ public class DriftBottle {
     private LocalDateTime createdAt;
 
     private LocalDateTime sunkAt;
+
+    /**
+     * 沉底原因（仅 status=sunk 时有意义）：
+     * user = 用户主动沉底（通过 /bottles/{id}/sink 接口）
+     * auto_report = 被多次举报自动隐藏（5分钟内3次举报）
+     * 该字段用于在举报审核不成立时，可精准恢复"仅因自动举报隐藏"的漂流瓶。
+     */
+    private String hideReason;
 }

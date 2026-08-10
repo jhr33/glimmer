@@ -31,4 +31,10 @@ private String receiverNickname;
 private String sourceBottleContent;
 /** 来源漂流瓶回复内容（bottle_reply类型时） */
 private String sourceReplyContent;
+
+/**
+ * 是否为 AI 机器人（回音）写的信
+ * true 时前端不显示举报按钮
+ */
+private Boolean isFromBot;
 }

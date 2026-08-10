@@ -16,7 +16,10 @@ import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
- * 篝火定时任务：仅负责熄灭空闲超过 30 分钟的非默认篝火。
+ * 篝火定时任务
+ * <p>
+ * 1. 熄灭空闲超过 30 分钟的非默认篝火
+ * 2. 清理 10 分钟无活动的成员（自动退出）
  * <p>
  * 篝火聊天记录超过 24 小时：
  * - 数据库不主动删除（保留数据便于事后审计、举报处理、申诉取证）
@@ -27,7 +30,10 @@ import java.util.stream.Collectors;
 @Component
 public class CampfireScheduler {
 
+    /** 篝火熄灭阈值 */
     private static final int IDLE_MINUTES = 30;
+    /** 成员自动退出阈值 */
+    private static final int MEMBER_IDLE_MINUTES = 10;
 
     private final CampfireMapper campfireMapper;
     private final CampfireMemberMapper campfireMemberMapper;
@@ -94,10 +100,35 @@ public class CampfireScheduler {
 
         if (updated > 0) {
             campfireMemberMapper.delete(
-                    new LambdaQueryWrapper<CampfireMember>()
+                    new LambdaUpdateWrapper<CampfireMember>()
                             .in(CampfireMember::getCampfireId, idleCampfireIds));
         }
 
         log.info("自动熄灭空闲篝火: count={}, ids={}", updated, idleCampfireIds);
+    }
+
+    /**
+     * 每 2 分钟检查一次：清理 10 分钟无活动的成员（自动退出）
+     * 用户离开篝火页面超过 10 分钟，视为离线，从成员表移除
+     */
+    @Scheduled(fixedRate = 120000)
+    public void autoRemoveInactiveMembers() {
+        LocalDateTime threshold = LocalDateTime.now().minusMinutes(MEMBER_IDLE_MINUTES);
+
+        // 查询最后活跃时间过期的成员
+        int removed = campfireMemberMapper.delete(
+                new LambdaQueryWrapper<CampfireMember>()
+                        .lt(CampfireMember::getLastActiveAt, threshold));
+
+        // 同时清理 lastActiveAt 为 null 的成员（历史数据兼容）
+        int nullRemoved = campfireMemberMapper.delete(
+                new LambdaQueryWrapper<CampfireMember>()
+                        .isNull(CampfireMember::getLastActiveAt)
+                        .lt(CampfireMember::getJoinedAt, threshold));
+
+        int totalRemoved = removed + nullRemoved;
+        if (totalRemoved > 0) {
+            log.info("清理无活动篝火成员: removed={}, expiredAt={}", totalRemoved, threshold);
+        }
     }
 }

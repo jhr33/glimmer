@@ -170,6 +170,23 @@ public class TokenServiceImpl implements TokenService {
     }
 
     @Override
+    public List<LocalDate> getMonthlySignInDates(Long userId, int year, int month) {
+        // 计算月份起止日期
+        LocalDate monthStart = LocalDate.of(year, month, 1);
+        LocalDate monthEnd = monthStart.plusMonths(1).minusDays(1);
+
+        List<SignInRecord> records = signInRecordMapper.selectList(new LambdaQueryWrapper<SignInRecord>()
+                .eq(SignInRecord::getUserId, userId)
+                .ge(SignInRecord::getSignDate, monthStart)
+                .le(SignInRecord::getSignDate, monthEnd)
+                .orderByAsc(SignInRecord::getSignDate));
+
+        return records.stream()
+                .map(SignInRecord::getSignDate)
+                .collect(Collectors.toList());
+    }
+
+    @Override
     public PageResult<TransactionVO> getTransactions(Long userId, String type, String source, int page, int size) {
         Page<TokenTransaction> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<TokenTransaction> wrapper = new LambdaQueryWrapper<TokenTransaction>()

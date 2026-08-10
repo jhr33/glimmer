@@ -142,7 +142,7 @@ class DriftBottleServiceImplTest {
         when(driftBottleMapper.selectList(any())).thenReturn(List.of(otherBottle));
 
         // when
-        BottlePickVO vo = driftBottleService.pickBottle(userId);
+        BottlePickVO vo = driftBottleService.pickBottle(userId, "public");
 
         // then
         assertNotNull(vo);
@@ -170,7 +170,7 @@ class DriftBottleServiceImplTest {
         when(driftBottleMapper.selectList(any())).thenReturn(Collections.emptyList());
 
         // when
-        BottlePickVO vo = driftBottleService.pickBottle(userId);
+        BottlePickVO vo = driftBottleService.pickBottle(userId, "public");
 
         // then
         assertNull(vo, "无可用瓶子时应返回 null");
@@ -199,7 +199,7 @@ class DriftBottleServiceImplTest {
 
         // when & then
         BusinessException ex = assertThrows(BusinessException.class,
-                () -> driftBottleService.pickBottle(userId));
+                () -> driftBottleService.pickBottle(userId, "public"));
         assertEquals(ErrorCode.CONFLICT.getCode(), ex.getCode());
     }
 

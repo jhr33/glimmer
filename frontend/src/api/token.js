@@ -10,6 +10,11 @@ export function getSignInStatus() {
   return request({ url: '/token/sign-in/today', method: 'get' })
 }
 
+// 查询某月签到日历
+export function getSignInCalendar(year, month) {
+  return request({ url: '/token/sign-in/calendar', method: 'get', params: { year, month } })
+}
+
 // 代币流水查询（分页，可按类型/来源筛选）
 export function getTransactions(params) {
   return request({ url: '/token/transactions', method: 'get', params })

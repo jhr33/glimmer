@@ -26,13 +26,23 @@ public interface LetterService {
 
     /**
      * 收件箱
+     *
+     * @param keyword   关键词（对内容做内存过滤，加密字段无法 SQL LIKE）
+     * @param timeRange 时间范围：today 今天 / week 近7天 / month 近30天 / custom 自定义
      */
-    PageResult<LetterVO> getInbox(Long userId, int page, int size);
+    PageResult<LetterVO> getInbox(Long userId, int page, int size,
+                                  String keyword, String timeRange,
+                                  String startDate, String endDate);
 
     /**
      * 发件箱
+     *
+     * @param keyword   关键词（对内容做内存过滤，加密字段无法 SQL LIKE）
+     * @param timeRange 时间范围：today 今天 / week 近7天 / month 近30天 / custom 自定义
      */
-    PageResult<LetterVO> getSent(Long userId, int page, int size);
+    PageResult<LetterVO> getSent(Long userId, int page, int size,
+                                 String keyword, String timeRange,
+                                 String startDate, String endDate);
 
     /**
      * 信件详情（校验为 sender 或 receiver）

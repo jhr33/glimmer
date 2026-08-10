@@ -33,8 +33,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -226,30 +231,73 @@ public class LetterServiceImpl implements LetterService {
     }
 
     @Override
-    public PageResult<LetterVO> getInbox(Long userId, int page, int size) {
-        Page<Letter> pageParam = new Page<>(page, size);
-        List<Long> bannedLetterIds = reportMapper.selectApprovedTargetIds("letter");
-        LambdaQueryWrapper<Letter> wrapper = new LambdaQueryWrapper<Letter>()
-                .eq(Letter::getReceiverId, userId)
-                .notIn(bannedLetterIds != null && !bannedLetterIds.isEmpty(), Letter::getId, bannedLetterIds)
-                .orderByDesc(Letter::getIsRead)
-                .orderByDesc(Letter::getCreatedAt);
-        IPage<Letter> result = letterMapper.selectPage(pageParam, wrapper);
-        List<LetterVO> list = toVOList(result.getRecords());
-        return new PageResult<>(list, result.getTotal(), page, size);
+    public PageResult<LetterVO> getInbox(Long userId, int page, int size,
+                                         String keyword, String timeRange,
+                                         String startDate, String endDate) {
+        return getLetterPage(true, userId, page, size, keyword, timeRange, startDate, endDate);
     }
 
     @Override
-    public PageResult<LetterVO> getSent(Long userId, int page, int size) {
-        Page<Letter> pageParam = new Page<>(page, size);
+    public PageResult<LetterVO> getSent(Long userId, int page, int size,
+                                        String keyword, String timeRange,
+                                        String startDate, String endDate) {
+        return getLetterPage(false, userId, page, size, keyword, timeRange, startDate, endDate);
+    }
+
+    /**
+     * 通用信件分页查询（收件箱/发件箱）。
+     * 注意：letter.content 是 AES-GCM 加密字段，TypeHandler 仅在 select 出对象后解密。
+     * 关键词无法在 SQL 中 LIKE，必须先按时间范围查出来，再在内存里过滤、手动分页。
+     */
+    private PageResult<LetterVO> getLetterPage(boolean isInbox, Long userId, int page, int size,
+                                               String keyword, String timeRange,
+                                               String startDateStr, String endDateStr) {
         List<Long> bannedLetterIds = reportMapper.selectApprovedTargetIds("letter");
+
+        // 步骤1：SQL 层过滤用户 + 时间 + 被举报ID（不含关键词，content 加密无法 SQL LIKE）
         LambdaQueryWrapper<Letter> wrapper = new LambdaQueryWrapper<Letter>()
-                .eq(Letter::getSenderId, userId)
-                .notIn(bannedLetterIds != null && !bannedLetterIds.isEmpty(), Letter::getId, bannedLetterIds)
-                .orderByDesc(Letter::getCreatedAt);
-        IPage<Letter> result = letterMapper.selectPage(pageParam, wrapper);
-        List<LetterVO> list = toVOList(result.getRecords());
-        return new PageResult<>(list, result.getTotal(), page, size);
+                .eq(isInbox ? Letter::getReceiverId : Letter::getSenderId, userId)
+                .notIn(bannedLetterIds != null && !bannedLetterIds.isEmpty(), Letter::getId, bannedLetterIds);
+
+        LocalDateTime[] range = resolveTimeRange(timeRange, startDateStr, endDateStr);
+        if (range[0] != null) {
+            wrapper.ge(Letter::getCreatedAt, range[0]);
+        }
+        if (range[1] != null) {
+            wrapper.lt(Letter::getCreatedAt, range[1]);
+        }
+        wrapper.orderByDesc(Letter::getCreatedAt);
+
+        // 查询所有符合条件的信件（TypeHandler 会自动解密 content，后续可直接 contains 关键词）
+        List<Letter> allLetters = letterMapper.selectList(wrapper);
+
+        // 步骤2：内存层关键词过滤（content 已由 TypeHandler 解密为明文）
+        List<Letter> filtered;
+        if (StringUtils.hasText(keyword)) {
+            final String kw = keyword.trim().toLowerCase();
+            filtered = allLetters.stream()
+                    .filter(l -> {
+                        String c = l.getContent();
+                        return c != null && c.toLowerCase().contains(kw);
+                    })
+                    .collect(Collectors.toList());
+        } else {
+            filtered = allLetters;
+        }
+
+        // 步骤3：手动分页（按原已排序顺序）
+        long total = filtered.size();
+        int from = Math.max(0, (page - 1) * size);
+        int to = Math.min(from + size, filtered.size());
+        List<Letter> pageList;
+        if (from >= filtered.size()) {
+            pageList = Collections.emptyList();
+        } else {
+            pageList = new ArrayList<>(filtered.subList(from, to));
+        }
+
+        List<LetterVO> voList = toVOList(pageList);
+        return new PageResult<>(voList, total, page, size);
     }
 
     @Override
@@ -269,6 +317,7 @@ public class LetterServiceImpl implements LetterService {
         LetterVO vo = toVO(letter);
         User sender = userMapper.selectById(letter.getSenderId());
         vo.setSenderNickname(sender != null ? resolveLetterDisplayName(sender) : "匿名旅人");
+        vo.setIsFromBot(sender != null && ("bot_echo".equals(sender.getUsername()) || "bot".equals(sender.getRole())));
         User receiver = userMapper.selectById(letter.getReceiverId());
         vo.setReceiverNickname(receiver != null ? resolveLetterDisplayName(receiver) : "匿名旅人");
 
@@ -318,6 +367,40 @@ public class LetterServiceImpl implements LetterService {
     }
 
     // ==================== 私有辅助方法 ====================
+
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final ZoneId SH = ZoneId.of("Asia/Shanghai");
+
+    /**
+     * 解析时间范围为 [start, end) 左闭右开。
+     */
+    static LocalDateTime[] resolveTimeRange(String timeRange, String startDateStr, String endDateStr) {
+        LocalDateTime start = null;
+        LocalDateTime end = null;
+        LocalDate today = LocalDate.now(SH);
+        if ("today".equals(timeRange)) {
+            start = today.atStartOfDay();
+            end = today.plusDays(1).atStartOfDay();
+        } else if ("week".equals(timeRange)) {
+            end = today.plusDays(1).atStartOfDay();
+            start = today.minusDays(6).atStartOfDay();
+        } else if ("month".equals(timeRange)) {
+            end = today.plusDays(1).atStartOfDay();
+            start = today.minusDays(29).atStartOfDay();
+        } else if ("custom".equals(timeRange)) {
+            if (StringUtils.hasText(startDateStr)) {
+                try {
+                    start = LocalDate.parse(startDateStr, DATE_FMT).atStartOfDay();
+                } catch (Exception ignore) { /* 格式非法忽略 */ }
+            }
+            if (StringUtils.hasText(endDateStr)) {
+                try {
+                    end = LocalDate.parse(endDateStr, DATE_FMT).plusDays(1).atStartOfDay();
+                } catch (Exception ignore) { /* 格式非法忽略 */ }
+            }
+        }
+        return new LocalDateTime[]{start, end};
+    }
 
     /**
      * 感谢奖励：给目标用户 +1代币 +1萤火（事务内）
@@ -404,15 +487,23 @@ public class LetterServiceImpl implements LetterService {
             if (l.getReceiverId() != null) userIds.add(l.getReceiverId());
         });
 
-        Map<Long, User> userMap = userIds.isEmpty()
+        List<User> users = userIds.isEmpty()
+                ? Collections.emptyList()
+                : userMapper.selectBatchIds(new HashSet<>(userIds));
+        Map<Long, User> userMap = users.isEmpty()
                 ? Collections.emptyMap()
-                : userMapper.selectBatchIds(userIds).stream()
-                .collect(Collectors.toMap(User::getId, u -> u, (a, b) -> a));
+                : users.stream().collect(Collectors.toMap(User::getId, u -> u, (a, b) -> a));
+        // 顺手过滤出 bot 用户 ID 集合，用于注入 isFromBot
+        Set<Long> botIds = users.stream()
+                .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
+                .map(User::getId)
+                .collect(Collectors.toSet());
 
         return letters.stream().map(l -> {
             LetterVO vo = toVO(l);
             User sender = userMap.get(l.getSenderId());
             vo.setSenderNickname(sender != null ? resolveLetterDisplayName(sender) : "匿名旅人");
+            vo.setIsFromBot(l.getSenderId() != null && botIds.contains(l.getSenderId()));
             User receiver = userMap.get(l.getReceiverId());
             vo.setReceiverNickname(receiver != null ? resolveLetterDisplayName(receiver) : "匿名旅人");
             return vo;

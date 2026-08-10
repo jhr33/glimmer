@@ -205,8 +205,8 @@ onMounted(() => {
           </el-button>
         </div>
 
-        <!-- 举报按钮 -->
-        <div class="report-section">
+        <!-- 举报按钮：AI（回音）写的信不显示举报按钮 -->
+        <div v-if="!letter.isFromBot" class="report-section">
           <el-button @click="openReportLetter">举报</el-button>
         </div>
       </template>

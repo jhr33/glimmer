@@ -83,14 +83,18 @@ public class AuthServiceImpl implements AuthService {
 
         // 3. 校验用户状态（见开发文档 §2.1.2）
         if ("banned".equals(user.getStatus())) {
-            boolean hasActivePunishment = punishmentService.isUserBanned(user.getId());
-            if (hasActivePunishment) {
+            // 仅永久封禁（BAN）才拒绝登录；禁言（MUTE）用户可登录，写操作由 Service 层 checkUserNotMuted 拦截
+            if (punishmentService.isUserPermanentlyBanned(user.getId())) {
                 throw new BusinessException(ErrorCode.USER_BANNED);
             }
-            // 处罚已全部结束，自动恢复为active
-            user.setStatus("active");
-            userMapper.updateById(user);
-            log.info("用户登录时发现处罚已结束，自动恢复为active: userId={}", user.getId());
+            // 非永久封禁但 user.status=banned：检查是否还有任何活跃处罚
+            if (!punishmentService.isUserBanned(user.getId())) {
+                // 处罚已全部结束，自动恢复为active
+                user.setStatus("active");
+                userMapper.updateById(user);
+                log.info("用户登录时发现处罚已结束，自动恢复为active: userId={}", user.getId());
+            }
+            // MUTE 用户：允许登录，保持 banned 状态，Service 层 checkUserNotMuted 会拦截写操作
         }
 
         // 4. 签发 JWT（24小时，HS256）

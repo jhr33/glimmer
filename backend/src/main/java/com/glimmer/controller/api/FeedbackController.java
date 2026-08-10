@@ -5,6 +5,7 @@ import com.glimmer.common.response.Result;
 import com.glimmer.common.util.SecurityUtils;
 import com.glimmer.service.FeedbackService;
 import com.glimmer.service.dto.AppealCheckResult;
+import com.glimmer.service.dto.AppealGroupVO;
 import com.glimmer.service.dto.CreateAppealRequest;
 import com.glimmer.service.dto.CreateFeedbackRequest;
 import com.glimmer.service.dto.FeedbackVO;
@@ -18,6 +19,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+
+import java.util.List;
 
 /**
  * 意见信接口（需登录）
@@ -50,14 +53,23 @@ public class FeedbackController {
         return Result.success();
     }
 
-    @Operation(summary = "我的意见信列表（分页）")
+    @Operation(summary = "我的意见信列表（分页，支持按类型过滤）")
     @GetMapping("/mine")
     public Result<PageResult<FeedbackVO>> getMyFeedbacks(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String type) {
         Long userId = SecurityUtils.getCurrentUserId();
-        PageResult<FeedbackVO> result = feedbackService.getMyFeedbacks(userId, page, size);
+        PageResult<FeedbackVO> result = feedbackService.getMyFeedbacks(userId, page, size, type);
         return Result.success(result);
+    }
+
+    @Operation(summary = "我的申诉分组列表（同一举报单的多次申诉合并为一条）")
+    @GetMapping("/my-appeals")
+    public Result<List<AppealGroupVO>> getMyAppealGroups() {
+        Long userId = SecurityUtils.getCurrentUserId();
+        List<AppealGroupVO> groups = feedbackService.getMyAppealGroups(userId);
+        return Result.success(groups);
     }
 
     @Operation(summary = "意见信详情（仅提交者可看）")

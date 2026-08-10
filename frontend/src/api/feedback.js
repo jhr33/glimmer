@@ -15,6 +15,11 @@ export function getMyFeedbacks(params) {
   return request({ url: '/feedbacks/mine', method: 'get', params })
 }
 
+// 我的申诉分组列表（同一举报单的多次申诉合并为一条）
+export function getMyAppealGroups() {
+  return request({ url: '/feedbacks/my-appeals', method: 'get' })
+}
+
 // 意见信详情（仅提交者可看）
 export function getFeedback(feedbackId) {
   return request({ url: `/feedbacks/${feedbackId}`, method: 'get' })

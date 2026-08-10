@@ -6,8 +6,9 @@ export function throwBottle(data) {
 }
 
 // 捡漂流瓶（随机返回1个瓶子ID）
-export function pickBottle() {
-  return request({ url: '/bottles/pick', method: 'post' })
+// mode: 'public' 公海（默认，捞他人的瓶子）/ 'private' 私海（仅捞自己的瓶子）
+export function pickBottle(mode = 'public') {
+  return request({ url: '/bottles/pick', method: 'post', params: { mode } })
 }
 
 // 查看漂流瓶内容（仅在已捡到后可查看）
@@ -45,7 +46,7 @@ export function sinkBottle(bottleId) {
   return request({ url: `/bottles/${bottleId}/sink`, method: 'post' })
 }
 
-// 我扔出的瓶子列表（分页）
+// 我扔出的瓶子列表（分页，支持关键词+时间检索）
 export function getMyBottles(params) {
   return request({ url: '/bottles/mine', method: 'get', params })
 }

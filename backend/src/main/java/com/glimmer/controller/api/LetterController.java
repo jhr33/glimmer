@@ -51,23 +51,33 @@ public class LetterController {
         return Result.success();
     }
 
-    @Operation(summary = "收件箱（分页）")
+    @Operation(summary = "收件箱（分页，支持关键词+时间检索）")
     @GetMapping("/inbox")
     public Result<PageResult<LetterVO>> getInbox(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String timeRange,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate) {
         Long userId = SecurityUtils.getCurrentUserId();
-        PageResult<LetterVO> result = letterService.getInbox(userId, page, size);
+        PageResult<LetterVO> result = letterService.getInbox(userId, page, size,
+                keyword, timeRange, startDate, endDate);
         return Result.success(result);
     }
 
-    @Operation(summary = "发件箱（分页）")
+    @Operation(summary = "发件箱（分页，支持关键词+时间检索）")
     @GetMapping("/sent")
     public Result<PageResult<LetterVO>> getSent(
             @RequestParam(defaultValue = "1") int page,
-            @RequestParam(defaultValue = "10") int size) {
+            @RequestParam(defaultValue = "10") int size,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) String timeRange,
+            @RequestParam(required = false) String startDate,
+            @RequestParam(required = false) String endDate) {
         Long userId = SecurityUtils.getCurrentUserId();
-        PageResult<LetterVO> result = letterService.getSent(userId, page, size);
+        PageResult<LetterVO> result = letterService.getSent(userId, page, size,
+                keyword, timeRange, startDate, endDate);
         return Result.success(result);
     }
 

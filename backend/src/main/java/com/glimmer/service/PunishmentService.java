@@ -62,10 +62,19 @@ public interface PunishmentService {
 
     /**
      * 检查用户是否被封禁（有生效的BAN或MUTE处罚）
+     * 注意：此方法用于限制发言等写操作，不用于判断是否可登录
      * @param userId 用户ID
      * @return 是否被封禁
      */
     boolean isUserBanned(Long userId);
+
+    /**
+     * 检查用户是否被永久封禁（有生效的BAN处罚）
+     * 仅 BAN 类型才拒绝登录，MUTE 类型允许登录但限制发言
+     * @param userId 用户ID
+     * @return 是否被永久封禁
+     */
+    boolean isUserPermanentlyBanned(Long userId);
 
     /**
      * 获取用户当前处罚类型

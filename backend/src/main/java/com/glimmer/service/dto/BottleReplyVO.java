@@ -21,4 +21,10 @@ public class BottleReplyVO {
 
     private String content;
     private LocalDateTime createdAt;
+
+    /**
+     * 是否为 AI 机器人（回音）回复
+     * true 时前端不显示举报按钮
+     */
+    private Boolean isFromBot;
 }

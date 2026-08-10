@@ -627,7 +627,7 @@ onUnmounted(() => {
             <div class="bubble-time">
               <span>{{ formatTime(m.createdAt || m.created_at) }}</span>
               <el-button
-                v-if="!isMine(m)"
+                v-if="!isMine(m) && !m.isFromBot"
                 size="small"
                 link
                 type="danger"

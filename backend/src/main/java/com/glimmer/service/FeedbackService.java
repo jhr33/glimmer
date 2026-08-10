@@ -1,7 +1,10 @@
 package com.glimmer.service;
 
 import com.glimmer.common.response.PageResult;
+import com.glimmer.service.dto.AppealGroupVO;
 import com.glimmer.service.dto.FeedbackVO;
+
+import java.util.List;
 
 /**
  * 意见信服务
@@ -25,9 +28,17 @@ public interface FeedbackService {
     void createAppeal(Long userId, Long reportId, Long punishmentId, String content);
 
     /**
-     * 我的意见信列表（按 created_at 倒序）
+     * 我的意见信/申诉列表（按 created_at 倒序）
+     *
+     * @param type 类型过滤：feedback 仅意见 / appeal 仅申诉 / null 全部
      */
-    PageResult<FeedbackVO> getMyFeedbacks(Long userId, int page, int size);
+    PageResult<FeedbackVO> getMyFeedbacks(Long userId, int page, int size, String type);
+
+    /**
+     * 我的申诉分组列表（按举报单分组，同一举报单的多次申诉合并为一条）
+     * 每组包含被举报内容摘要和所有申诉记录，按最新申诉时间倒序。
+     */
+    List<AppealGroupVO> getMyAppealGroups(Long userId);
 
     /**
      * 意见信详情（仅提交者本人）

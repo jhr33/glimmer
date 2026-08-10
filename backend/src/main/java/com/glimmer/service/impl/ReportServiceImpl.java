@@ -21,6 +21,7 @@ import com.glimmer.mapper.DriftBottleReplyMapper;
 import com.glimmer.mapper.LetterMapper;
 import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.UserMapper;
+import com.glimmer.service.EchoService;
 import com.glimmer.service.NotificationService;
 import com.glimmer.service.PunishmentService;
 import com.glimmer.service.ReportService;
@@ -121,6 +122,13 @@ public class ReportServiceImpl implements ReportService {
         // 3. 不能举报自己
         if (targetUserId.equals(reporterId)) {
             throw new BusinessException(ErrorCode.CANNOT_REPORT_SELF);
+        }
+
+        // 3.5 AI 机器人（回音）账号不可被举报
+        User targetUserInfo = userMapper.selectById(targetUserId);
+        if (targetUserInfo != null && (EchoService.BOT_USERNAME.equals(targetUserInfo.getUsername())
+                || EchoService.ROLE_BOT.equals(targetUserInfo.getRole()))) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "AI 机器人账号不可被举报");
         }
 
         // 4. 检查同一条信息短时间内是否被多次举报（5分钟内超过3次自动隐藏）
@@ -276,7 +284,7 @@ public class ReportServiceImpl implements ReportService {
     }
 
     /**
-     * 根据目标类型隐藏内容
+     * 根据目标类型隐藏内容（由多次举报触发，需标记 hideReason=auto_report）
      */
     private void hideTargetContent(String targetType, Long targetId) {
         try {
@@ -285,6 +293,7 @@ public class ReportServiceImpl implements ReportService {
                     DriftBottle bottle = driftBottleMapper.selectById(targetId);
                     if (bottle != null && "drifting".equals(bottle.getStatus())) {
                         bottle.setStatus("sunk");
+                        bottle.setHideReason("auto_report");
                         bottle.setSunkAt(LocalDateTime.now());
                         driftBottleMapper.updateById(bottle);
                     }
@@ -305,6 +314,37 @@ public class ReportServiceImpl implements ReportService {
             }
         } catch (Exception e) {
             log.error("隐藏内容失败: targetType={}, targetId={}", targetType, targetId, e);
+        }
+    }
+
+    /**
+     * 审核举报不成立时恢复被自动隐藏的内容。
+     * 仅恢复 hideReason="auto_report" 的内容；用户主动沉底（hideReason=user）不会被误恢复。
+     */
+    private void restoreTargetContentIfAutoHidden(String targetType, Long targetId) {
+        try {
+            switch (targetType) {
+                case "drift_bottle": {
+                    DriftBottle bottle = driftBottleMapper.selectById(targetId);
+                    if (bottle == null) return;
+                    // 仅当瓶子状态是 sunk，且沉底原因是自动举报隐藏时，才恢复为漂流
+                    if ("sunk".equals(bottle.getStatus()) && "auto_report".equals(bottle.getHideReason())) {
+                        bottle.setStatus("drifting");
+                        bottle.setHideReason(null);
+                        bottle.setSunkAt(null);
+                        driftBottleMapper.updateById(bottle);
+                        log.info("举报审核不成立，自动恢复被隐藏的漂流瓶: bottleId={}", targetId);
+                    }
+                    break;
+                }
+                case "bottle_reply":
+                case "campfire_message":
+                case "letter":
+                    // 这三类目前不会被 hideTargetContent 真正隐藏（只在查询层过滤），无需恢复
+                    break;
+            }
+        } catch (Exception e) {
+            log.error("恢复内容失败: targetType={}, targetId={}", targetType, targetId, e);
         }
     }
 
@@ -399,6 +439,11 @@ public class ReportServiceImpl implements ReportService {
         }
         
         reportMapper.updateById(report);
+
+        // 审核不成立 → 如果内容是因为"多次举报自动隐藏"的，恢复可见
+        if ("rejected".equals(result)) {
+            restoreTargetContentIfAutoHidden(report.getTargetType(), report.getTargetId());
+        }
 
         if (targetUser != null) {
             int currentCount = targetUser.getPendingReportCount() == null ? 0 : targetUser.getPendingReportCount();
@@ -792,6 +837,11 @@ public class ReportServiceImpl implements ReportService {
             int newCount = Math.max(0, currentCount - pendingCount);
             targetUser.setPendingReportCount(newCount);
             userMapper.updateById(targetUser);
+        }
+
+        // 审核不成立 → 如果内容是因为"多次举报自动隐藏"的，恢复可见
+        if ("rejected".equals(result)) {
+            restoreTargetContentIfAutoHidden(targetType, targetId);
         }
 
         // 获取所有举报人ID

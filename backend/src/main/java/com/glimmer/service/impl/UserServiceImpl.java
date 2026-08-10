@@ -13,9 +13,11 @@ import com.glimmer.entity.User;
 import com.glimmer.mapper.FlowerMapper;
 import com.glimmer.mapper.FlowerTypeMapper;
 import com.glimmer.mapper.UserMapper;
+import com.glimmer.service.EchoService;
 import com.glimmer.service.NotificationService;
 import com.glimmer.service.PunishmentService;
 import com.glimmer.service.UserService;
+import com.glimmer.service.dto.ChangePasswordRequest;
 import com.glimmer.service.dto.FlowerVO;
 import com.glimmer.service.dto.GardenVO;
 import com.glimmer.service.dto.UpdateNicknameRequest;
@@ -24,10 +26,13 @@ import com.glimmer.service.dto.UserProfileVO;
 import com.glimmer.service.dto.UserVO;
 import com.glimmer.service.util.GardenBrightnessHelper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -46,14 +51,17 @@ public class UserServiceImpl implements UserService {
     private final FlowerTypeMapper flowerTypeMapper;
     private final NotificationService notificationService;
     private final PunishmentService punishmentService;
+    private final PasswordEncoder passwordEncoder;
 
     public UserServiceImpl(UserMapper userMapper, FlowerMapper flowerMapper, FlowerTypeMapper flowerTypeMapper,
-                           NotificationService notificationService, PunishmentService punishmentService) {
+                           NotificationService notificationService, PunishmentService punishmentService,
+                           PasswordEncoder passwordEncoder) {
         this.userMapper = userMapper;
         this.flowerMapper = flowerMapper;
         this.flowerTypeMapper = flowerTypeMapper;
         this.notificationService = notificationService;
         this.punishmentService = punishmentService;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
@@ -71,6 +79,39 @@ public class UserServiceImpl implements UserService {
         if (!success) {
             throw new BusinessException(ErrorCode.CONFLICT, "昵称更新冲突，请重试");
         }
+    }
+
+    /**
+     * 修改密码：验证原密码 + 频率限制（一天一次）+ BCrypt 加密新密码
+     */
+    @Override
+    public void changePassword(Long userId, ChangePasswordRequest request) {
+        User user = getUserOrThrow(userId);
+
+        // 1. 验证原密码（BCrypt matches）
+        if (!passwordEncoder.matches(request.getOldPassword(), user.getPassword())) {
+            throw new BusinessException(ErrorCode.PASSWORD_NOT_MATCH);
+        }
+
+        // 2. 频率限制：一天只能修改一次
+        if (user.getPasswordChangedAt() != null) {
+            LocalDateTime lastChanged = user.getPasswordChangedAt();
+            LocalDateTime now = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
+            if (lastChanged.plusDays(1).isAfter(now)) {
+                throw new BusinessException(ErrorCode.PASSWORD_CHANGE_LIMITED);
+            }
+        }
+
+        // 3. 加密并更新新密码，记录修改时间
+        user.setPassword(passwordEncoder.encode(request.getNewPassword()));
+        user.setPasswordChangedAt(LocalDateTime.now(ZoneId.of("Asia/Shanghai")));
+
+        boolean success = userMapper.updateById(user) > 0;
+        if (!success) {
+            throw new BusinessException(ErrorCode.CONFLICT, "密码更新冲突，请重试");
+        }
+
+        log.info("用户密码修改成功: userId={}", userId);
     }
 
     @Override
@@ -194,6 +235,12 @@ public class UserServiceImpl implements UserService {
         // 4. 不允许封禁其他管理员
         if ("banned".equals(status) && "admin".equals(user.getRole())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "不允许封禁管理员");
+        }
+
+        // 4.5 不允许封禁 AI 机器人账号（回音）
+        if ("banned".equals(status) && (EchoService.BOT_USERNAME.equals(user.getUsername())
+                || EchoService.ROLE_BOT.equals(user.getRole()))) {
+            throw new BusinessException(ErrorCode.FORBIDDEN, "不允许封禁 AI 机器人账号");
         }
 
         // 5. 状态未变化直接返回

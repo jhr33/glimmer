@@ -5,6 +5,8 @@ import com.glimmer.service.dto.SignInResponse;
 import com.glimmer.service.dto.SignInStatusResponse;
 import com.glimmer.service.dto.TransactionVO;
 
+import java.util.List;
+
 /**
  * 代币服务（签到、流水查询）
  */
@@ -21,6 +23,16 @@ public interface TokenService {
      * 查询今日签到状态
      */
     SignInStatusResponse getSignInStatus(Long userId);
+
+    /**
+     * 查询某月签到日期列表
+     *
+     * @param userId 用户ID
+     * @param year   年份
+     * @param month  月份（1-12）
+     * @return 签到日期列表（LocalDate）
+     */
+    List<java.time.LocalDate> getMonthlySignInDates(Long userId, int year, int month);
 
     /**
      * 代币流水查询（分页，可按类型/来源筛选）

@@ -24,4 +24,10 @@ public class BottleVO {
 
     /** 回复数（我的瓶子列表用） */
     private Integer replyCount;
+
+    /**
+     * 是否为 AI 机器人（回音）扔的瓶子
+     * true 时前端不显示举报按钮
+     */
+    private Boolean isFromBot;
 }

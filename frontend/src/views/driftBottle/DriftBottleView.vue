@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   throwBottle,
@@ -18,6 +19,7 @@ import { useUserStore } from '@/stores/user'
 import ReportDialog from '@/components/ReportDialog.vue'
 
 const userStore = useUserStore()
+const route = useRoute()
 const currentUserId = computed(() => userStore.userInfo?.id)
 
 // 举报弹窗
@@ -41,6 +43,19 @@ function openReportReply(reply) {
 
 // 场景：main 主场景 / picked 捡到瓶子 / mine 我的瓶子
 const scene = ref('main')
+
+// 捡瓶模式：public 公海（默认，捞他人的瓶子）/ private 私海（仅捞自己的瓶子）
+const pickMode = ref('public')
+const isPrivate = computed(() => pickMode.value === 'private')
+const pickModeLabel = computed(() => (isPrivate.value ? '私海' : '公海'))
+const pickDesc = computed(() =>
+  isPrivate.value
+    ? '在自己的海域里打捞曾经的自己 · 只会捞到你的瓶子'
+    : '把心事装入瓶中，让海浪带它去远方 · 点击被推上岸的瓶子打开'
+)
+const noBottleMsg = computed(() =>
+  isPrivate.value ? '私海暂时没有你的瓶子了' : '大海暂时没有瓶子了'
+)
 
 // 被海浪推上沙滩的瓶子（点击可打开）
 const washedBottles = ref([]) // { uid, left, rotate, landed, leaving, loading }
@@ -119,6 +134,45 @@ const mineLoading = ref(false)
 const mineList = ref([])
 const mineTotal = ref(0)
 const minePage = reactive({ current: 1, size: 10 })
+// 检索条件
+const mineKeyword = ref('')
+const mineTimeRange = ref('') // '' 全部 / today / week / month / custom
+const mineDateRange = ref([]) // [startDate, endDate]
+
+function buildMineParams() {
+  const params = { page: minePage.current, size: minePage.size }
+  if (mineKeyword.value?.trim()) {
+    params.keyword = mineKeyword.value.trim()
+  }
+  if (mineTimeRange.value) {
+    params.timeRange = mineTimeRange.value
+    if (mineTimeRange.value === 'custom' && Array.isArray(mineDateRange.value) && mineDateRange.value.length === 2) {
+      params.startDate = formatYMD(mineDateRange.value[0])
+      params.endDate = formatYMD(mineDateRange.value[1])
+    }
+  }
+  return params
+}
+function formatYMD(d) {
+  if (!d) return ''
+  const dt = new Date(d)
+  const y = dt.getFullYear()
+  const m = String(dt.getMonth() + 1).padStart(2, '0')
+  const dd = String(dt.getDate()).padStart(2, '0')
+  return `${y}-${m}-${dd}`
+}
+
+function applyMineSearch() {
+  minePage.current = 1
+  fetchMine()
+}
+function resetMineSearch() {
+  mineKeyword.value = ''
+  mineTimeRange.value = ''
+  mineDateRange.value = []
+  minePage.current = 1
+  fetchMine()
+}
 
 // 我的瓶子详情（含回复）
 const detailVisible = ref(false)
@@ -227,10 +281,10 @@ async function handlePick() {
   }
   pickLoading.value = true
   try {
-    const res = await pickBottle()
+    const res = await pickBottle(pickMode.value)
     const data = res.data
     if (!data || !data.found || !data.bottle) {
-      ElMessage.info('大海暂时没有瓶子了')
+      ElMessage.info(noBottleMsg.value)
       return
     }
     const bottle = data.bottle
@@ -269,10 +323,10 @@ async function openWashedBottle(bottle) {
   bottle.loading = true
   pickLoading.value = true
   try {
-    const res = await pickBottle()
+    const res = await pickBottle(pickMode.value)
     const data = res.data
     if (!data || !data.found || !data.bottle) {
-      ElMessage.info('大海暂时没有瓶子了')
+      ElMessage.info(noBottleMsg.value)
       removeBottle(bottle.uid)
       return
     }
@@ -394,7 +448,7 @@ async function handleThankBottle() {
 async function fetchMine() {
   mineLoading.value = true
   try {
-    const res = await getMyBottles({ page: minePage.current, size: minePage.size })
+    const res = await getMyBottles(buildMineParams())
     const data = res.data
     mineList.value = pickList(data)
     mineTotal.value = pickTotal(data)
@@ -419,8 +473,13 @@ async function openMineDetail(item) {
   try {
     const res = await getBottleReplies(item.id, { page: 1, size: 100 })
     detailReplies.value = pickList(res.data)
+    if (detailReplies.value.length === 0) {
+      // 静默显示空列表，可能确实没有回复
+    }
   } catch (e) {
     detailReplies.value = []
+    const msg = e?.response?.data?.message || e?.message || '获取回复失败'
+    ElMessage.error(msg)
   } finally {
     detailLoading.value = false
   }
@@ -509,13 +568,42 @@ watch(() => userStore.userInfo?.status, () => {
   isBanned.value = userStore.userInfo?.status === 'banned'
 })
 
-onMounted(() => {
+onMounted(async () => {
   // 进入页面时同步封禁状态
   isBanned.value = userStore.userInfo?.status === 'banned'
   // 启动瓶子生成定时器
   scheduleSpawn()
   // 首个瓶子尽快出现
   setTimeout(spawnBottle, 600)
+
+  // 从通知跳转过来时，自动打开对应瓶子的详情
+  const bottleId = route.query.id
+  if (bottleId) {
+    // 先进入"我的瓶子"场景
+    scene.value = 'mine'
+    minePage.current = 1
+    await fetchMine()
+    // 找到对应瓶子并打开详情
+    const target = mineList.value.find((b) => String(b.id) === String(bottleId))
+    if (target) {
+      openMineDetail(target)
+    } else {
+      // 可能不在第一页，尝试用 bottleId 直接查回复
+      detailBottle.value = { id: Number(bottleId), content: '', status: 'drifting', createdAt: '-' }
+      detailVisible.value = true
+      detailLoading.value = true
+      try {
+        const res = await getBottleReplies(bottleId, { page: 1, size: 100 })
+        detailReplies.value = pickList(res.data)
+      } catch (e) {
+        // 非瓶主或不存在时，后端会返回错误，提示一下
+        ElMessage.warning('无法查看该漂流瓶回复')
+        detailVisible.value = false
+      } finally {
+        detailLoading.value = false
+      }
+    }
+  }
 })
 
 onUnmounted(() => {
@@ -606,7 +694,15 @@ onUnmounted(() => {
         <!-- 沙滩操作区 -->
         <div class="beach-inner">
           <div class="ocean-title">🌊 漂流瓶</div>
-          <p class="ocean-desc">把心事装入瓶中，让海浪带它去远方 · 点击被推上岸的瓶子打开</p>
+          <p class="ocean-desc">{{ pickDesc }}</p>
+          <!-- 公海/私海模式切换 -->
+          <div class="pick-mode-toggle">
+            <span class="mode-label">捞瓶海域：</span>
+            <el-radio-group v-model="pickMode" size="small" :disabled="isBanned">
+              <el-radio-button value="public">🌍 公海</el-radio-button>
+              <el-radio-button value="private">🏝️ 私海</el-radio-button>
+            </el-radio-group>
+          </div>
           <div class="ocean-actions">
             <el-button
               size="large"
@@ -624,7 +720,7 @@ onUnmounted(() => {
               :disabled="isBanned"
               @click="handlePick"
             >
-              🤚 捡漂流瓶
+              🤚 {{ isPrivate ? '捞自己的瓶子' : '捡漂流瓶' }}
             </el-button>
             <el-button
               size="large"
@@ -701,7 +797,7 @@ onUnmounted(() => {
             >
               {{ hasThankedBottle(openedBottle) ? '已感谢' : '感谢' }}
             </el-button>
-            <el-button @click="openReportBottle">举报</el-button>
+            <el-button v-if="!openedBottle.isFromBot" @click="openReportBottle">举报</el-button>
             <el-button :disabled="isBanned" @click="handleRelease">放回大海</el-button>
             <el-button @click="backToMain">返回</el-button>
           </div>
@@ -717,7 +813,46 @@ onUnmounted(() => {
       </div>
 
       <el-card v-loading="mineLoading" shadow="never" class="list-card">
-        <el-empty v-if="!mineLoading && mineList.length === 0" description="你还没有扔过漂流瓶" />
+        <!-- 搜索栏：关键词 + 时间范围 -->
+        <div class="search-bar">
+          <el-input
+            v-model="mineKeyword"
+            placeholder="搜索瓶子内容关键词"
+            clearable
+            class="search-input"
+            @keyup.enter="applyMineSearch"
+          >
+            <template #prefix>🔍</template>
+          </el-input>
+          <el-select
+            v-model="mineTimeRange"
+            placeholder="按时间筛选"
+            clearable
+            class="time-select"
+            @change="applyMineSearch"
+          >
+            <el-option label="全部时间" value="" />
+            <el-option label="今天" value="today" />
+            <el-option label="近7天" value="week" />
+            <el-option label="近30天" value="month" />
+            <el-option label="自定义" value="custom" />
+          </el-select>
+          <el-date-picker
+            v-if="mineTimeRange === 'custom'"
+            v-model="mineDateRange"
+            type="daterange"
+            range-separator="至"
+            start-placeholder="开始日期"
+            end-placeholder="结束日期"
+            value-format="YYYY-MM-DD"
+            class="date-range"
+            @change="applyMineSearch"
+          />
+          <el-button type="primary" @click="applyMineSearch">搜索</el-button>
+          <el-button @click="resetMineSearch">重置</el-button>
+        </div>
+
+        <el-empty v-if="!mineLoading && mineList.length === 0" description="你还没有扔过漂流瓶或没有匹配结果" />
 
         <ul v-else class="mine-list">
           <li v-for="item in mineList" :key="item.id" class="mine-item">
@@ -860,6 +995,7 @@ onUnmounted(() => {
                     写信
                   </el-button>
                   <el-button
+                    v-if="!r.isFromBot"
                     size="small"
                     link
                     type="danger"
@@ -1216,6 +1352,22 @@ onUnmounted(() => {
   color: #fff;
   text-shadow: 0 1px 4px rgba(0,0,0,0.35);
 }
+/* 公海/私海模式切换 */
+.pick-mode-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.mode-label {
+  font-size: 13px;
+  color: #fff;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+}
+.pick-mode-toggle :deep(.el-radio-button__inner) {
+  font-weight: 600;
+}
 .ocean-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1474,6 +1626,28 @@ onUnmounted(() => {
   margin: 0;
   font-size: 22px;
   color: #303133;
+}
+/* 检索栏 */
+.search-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px;
+  background: #faf7ee;
+  border-radius: 8px;
+  border: 1px solid #f0e6d2;
+}
+.search-input {
+  max-width: 240px;
+}
+.time-select {
+  width: 140px;
+}
+.date-range {
+  width: auto;
+  min-width: 260px;
 }
 .list-card {
   border-radius: 10px;

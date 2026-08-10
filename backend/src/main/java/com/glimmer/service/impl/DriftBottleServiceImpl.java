@@ -36,7 +36,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -99,7 +102,7 @@ public class DriftBottleServiceImpl implements DriftBottleService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public BottlePickVO pickBottle(Long userId) {
+    public BottlePickVO pickBottle(Long userId, String mode) {
         userService.checkUserNotMuted(userId);
 
         // 查询用户已捡过的瓶子ID列表
@@ -117,10 +120,17 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         // 随机抽取1个未捡过的漂流瓶（排除被举报成立的）
         LambdaQueryWrapper<DriftBottle> wrapper = new LambdaQueryWrapper<DriftBottle>()
                 .eq(DriftBottle::getStatus, "drifting")
-                .ne(DriftBottle::getUserId, userId)
                 .notIn(!pickedBottleIds.isEmpty(), DriftBottle::getId, pickedBottleIds)
-                .notIn(bannedBottleIds != null && !bannedBottleIds.isEmpty(), DriftBottle::getId, bannedBottleIds)
-                .last("ORDER BY RAND() LIMIT 1");
+                .notIn(bannedBottleIds != null && !bannedBottleIds.isEmpty(), DriftBottle::getId, bannedBottleIds);
+
+        // 公海/私海模式切换：私海仅捞自己的瓶子，公海（默认）排除自己的瓶子
+        if ("private".equals(mode)) {
+            wrapper.eq(DriftBottle::getUserId, userId);
+        } else {
+            wrapper.ne(DriftBottle::getUserId, userId);
+        }
+
+        wrapper.last("ORDER BY RAND() LIMIT 1");
         List<DriftBottle> bottles = driftBottleMapper.selectList(wrapper);
 
         if (bottles.isEmpty()) {
@@ -330,15 +340,34 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         driftBottleMapper.update(null, new LambdaUpdateWrapper<DriftBottle>()
                 .eq(DriftBottle::getId, bottleId)
                 .set(DriftBottle::getStatus, "sunk")
+                .set(DriftBottle::getHideReason, "user")
                 .set(DriftBottle::getSunkAt, LocalDateTime.now()));
     }
 
     @Override
-    public PageResult<BottleVO> getMyBottles(Long userId, int page, int size) {
+    public PageResult<BottleVO> getMyBottles(Long userId, int page, int size,
+                                             String keyword, String timeRange,
+                                             String startDate, String endDate) {
         Page<DriftBottle> pageParam = new Page<>(page, size);
         LambdaQueryWrapper<DriftBottle> wrapper = new LambdaQueryWrapper<DriftBottle>()
-                .eq(DriftBottle::getUserId, userId)
-                .orderByDesc(DriftBottle::getCreatedAt);
+                .eq(DriftBottle::getUserId, userId);
+
+        // 关键词 LIKE 模糊匹配
+        if (StringUtils.hasText(keyword)) {
+            wrapper.like(DriftBottle::getContent, keyword.trim());
+        }
+
+        // 时间范围过滤
+        LocalDateTime[] range = resolveTimeRange(timeRange, startDate, endDate);
+        if (range[0] != null) {
+            wrapper.ge(DriftBottle::getCreatedAt, range[0]);
+        }
+        if (range[1] != null) {
+            wrapper.lt(DriftBottle::getCreatedAt, range[1]);
+        }
+
+        wrapper.orderByDesc(DriftBottle::getCreatedAt);
+
         IPage<DriftBottle> result = driftBottleMapper.selectPage(pageParam, wrapper);
         List<BottleVO> list = result.getRecords().stream().map(this::toBottleVO).collect(Collectors.toList());
         fillAnonymousNames(list);
@@ -367,6 +396,42 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     }
 
     // ==================== 私有辅助方法 ====================
+
+    private static final DateTimeFormatter DATE_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    private static final ZoneId SH = ZoneId.of("Asia/Shanghai");
+
+    /**
+     * 解析时间范围为 [start, end) 左闭右开。
+     * timeRange: today/week/month/custom；其它值视为不限。
+     * 返回长度为 2 的数组，元素可能为 null 表示该端不限制。
+     */
+    static LocalDateTime[] resolveTimeRange(String timeRange, String startDateStr, String endDateStr) {
+        LocalDateTime start = null;
+        LocalDateTime end = null;
+        LocalDate today = LocalDate.now(SH);
+        if ("today".equals(timeRange)) {
+            start = today.atStartOfDay();
+            end = today.plusDays(1).atStartOfDay();
+        } else if ("week".equals(timeRange)) {
+            end = today.plusDays(1).atStartOfDay();
+            start = today.minusDays(6).atStartOfDay();
+        } else if ("month".equals(timeRange)) {
+            end = today.plusDays(1).atStartOfDay();
+            start = today.minusDays(29).atStartOfDay();
+        } else if ("custom".equals(timeRange)) {
+            if (StringUtils.hasText(startDateStr)) {
+                try {
+                    start = LocalDate.parse(startDateStr, DATE_FMT).atStartOfDay();
+                } catch (Exception ignore) { /* 格式非法忽略 */ }
+            }
+            if (StringUtils.hasText(endDateStr)) {
+                try {
+                    end = LocalDate.parse(endDateStr, DATE_FMT).plusDays(1).atStartOfDay();
+                } catch (Exception ignore) { /* 格式非法忽略 */ }
+            }
+        }
+        return new LocalDateTime[]{start, end};
+    }
 
     /**
      * 感谢奖励：给目标用户 +1代币 +1萤火（事务内）
@@ -461,9 +526,18 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .distinct()
                 .collect(Collectors.toList());
         if (userIds.isEmpty()) return;
-        Map<Long, String> nameMap = userMapper.selectBatchIds(userIds).stream()
+        List<User> users = userMapper.selectBatchIds(userIds);
+        Map<Long, String> nameMap = users.stream()
                 .collect(Collectors.toMap(User::getId, User::getAnonymousName, (a, b) -> a));
-        bottles.forEach(b -> b.setAnonymousName(nameMap.getOrDefault(b.getUserId(), "匿名旅人")));
+        // bot 身份集合：username == bot_echo 或 role == bot
+        Set<Long> botIds = users.stream()
+                .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
+                .map(User::getId)
+                .collect(Collectors.toSet());
+        bottles.forEach(b -> {
+            b.setAnonymousName(nameMap.getOrDefault(b.getUserId(), "匿名旅人"));
+            b.setIsFromBot(botIds.contains(b.getUserId()));
+        });
     }
 
     private void fillReplyAnonymousNames(List<BottleReplyVO> replies) {
@@ -474,9 +548,17 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .distinct()
                 .collect(Collectors.toList());
         if (userIds.isEmpty()) return;
-        Map<Long, String> nameMap = userMapper.selectBatchIds(userIds).stream()
+        List<User> users = userMapper.selectBatchIds(userIds);
+        Map<Long, String> nameMap = users.stream()
                 .collect(Collectors.toMap(User::getId, User::getAnonymousName, (a, b) -> a));
-        replies.forEach(r -> r.setAnonymousName(nameMap.getOrDefault(r.getUserId(), "匿名旅人")));
+        Set<Long> botIds = users.stream()
+                .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
+                .map(User::getId)
+                .collect(Collectors.toSet());
+        replies.forEach(r -> {
+            r.setAnonymousName(nameMap.getOrDefault(r.getUserId(), "匿名旅人"));
+            r.setIsFromBot(botIds.contains(r.getUserId()));
+        });
     }
 
     private BottleSummaryVO toSummaryVO(DriftBottle bottle) {
