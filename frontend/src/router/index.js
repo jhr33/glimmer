@@ -17,9 +17,13 @@ const routes = [
   },
   {
     path: '/',
+    redirect: '/driftBottle'
+  },
+  {
+    path: '/home',
     name: 'home',
     component: () => import('@/views/HomeView.vue'),
-    meta: { requiresAuth: true }
+    meta: { requiresAuth: true, title: '首页' }
   },
   {
     path: '/announcements',
@@ -139,31 +143,26 @@ router.beforeEach(async (to, from, next) => {
   if (to.meta.requiresAuth === false) {
     // 已登录用户访问登录/注册页时跳转首页
     if (isLoggedIn && (to.name === 'login' || to.name === 'register')) {
-      next({ name: 'home' })
+      next('/home')
       return
     }
     next()
     return
   }
 
-  // 受保护路由
-  if (!isLoggedIn) {
-    next({ name: 'login', query: { redirect: to.fullPath } })
-    return
-  }
-
-  // 刷新用户信息（确保封禁/解禁状态实时同步）
-  try {
-    await userStore.fetchUserInfo()
-  } catch (e) {
-    // 刷新失败时不阻止导航
-  }
-
-  // 管理员路由：非 admin 角色访问 /admin/** 时跳转首页并提示
-  if (to.meta.requiresAdmin && !userStore.isAdmin) {
-    ElMessage.error('无权限')
-    next({ name: 'home' })
-    return
+  // 游客模式：除管理员路由外，所有其他页面允许游客进入浏览
+  // —— 按钮级别的写操作会在各页面内通过 isLoggedIn 禁用 + 401 拦截兜底
+  if (to.meta.requiresAdmin) {
+    if (!isLoggedIn) {
+      next({ name: 'login', query: { redirect: to.fullPath } })
+      return
+    }
+    // 管理员路由需要校验角色
+    if (isLoggedIn && !userStore.isAdmin) {
+      ElMessage.error('无权限')
+      next('/home')
+      return
+    }
   }
 
   next()

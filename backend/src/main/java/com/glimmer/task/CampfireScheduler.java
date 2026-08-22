@@ -32,8 +32,8 @@ public class CampfireScheduler {
 
     /** 篝火熄灭阈值 */
     private static final int IDLE_MINUTES = 30;
-    /** 成员自动退出阈值 */
-    private static final int MEMBER_IDLE_MINUTES = 10;
+    /** 成员自动退出阈值（离开篝火页面超过此时间自动退出） */
+    private static final int MEMBER_IDLE_MINUTES = 20;
 
     private final CampfireMapper campfireMapper;
     private final CampfireMemberMapper campfireMemberMapper;

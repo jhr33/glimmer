@@ -31,4 +31,22 @@ public final class SecurityUtils {
         }
         throw new BusinessException(ErrorCode.UNAUTHORIZED);
     }
+
+    /**
+     * 获取当前登录用户ID，未登录返回 null（游客模式）
+     */
+    public static Long getCurrentUserIdOrNull() {
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+        if (authentication == null || !authentication.isAuthenticated()) {
+            return null;
+        }
+        Object principal = authentication.getPrincipal();
+        if (principal instanceof Long) {
+            return (Long) principal;
+        }
+        if (principal instanceof Number) {
+            return ((Number) principal).longValue();
+        }
+        return null;
+    }
 }

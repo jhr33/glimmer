@@ -40,7 +40,7 @@ public class CampfireController {
     @Operation(summary = "篝火列表（系统默认 + 我创建的 + 我加入的）")
     @GetMapping
     public Result<List<CampfireVO>> getCampfireList() {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
         List<CampfireVO> list = campfireService.getCampfireList(userId);
         return Result.success(list);
     }
@@ -56,7 +56,7 @@ public class CampfireController {
     @Operation(summary = "篝火详情（含成员数）")
     @GetMapping("/{campfireId}")
     public Result<CampfireVO> getCampfireDetail(@PathVariable Long campfireId) {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
         CampfireVO vo = campfireService.getCampfireDetail(userId, campfireId);
         return Result.success(vo);
     }
@@ -67,7 +67,7 @@ public class CampfireController {
             @PathVariable Long campfireId,
             @RequestParam(defaultValue = "1") int page,
             @RequestParam(defaultValue = "20") int size) {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
         PageResult<CampfireMessageVO> result = campfireService.getHistoryMessages(userId, campfireId, page, size);
         return Result.success(result);
     }

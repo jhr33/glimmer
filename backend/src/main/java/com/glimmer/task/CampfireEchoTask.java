@@ -8,16 +8,18 @@ import org.springframework.stereotype.Component;
 /**
  * 回音机器人：篝火定时任务
  * 每 10 秒扫描一次活跃篝火：
- * - 真人发言后 10 秒无人接话 → 回音回应（保持对话不冷场）
- * - 冷场超过 30 分钟无人发言 → 回音提新话题
- * 见开发文档 §9 AI 机器人系统
+ * - 用户让回音闭嘴 → 暂时不接话
+ * - 用户呼唤回音 → 恢复正常接话
+ * - 只有1人在线 → 直接接话
+ * - 多人在线但3分钟内只有同一人发言 → 接话
+ * - 无人说话超过15分钟 → 主动抛出新话题
  */
 @Slf4j
 @Component
 public class CampfireEchoTask {
 
-    /** 冷场判定秒数：长期无人发言超过此时间则提新话题（30 分钟） */
-    private static final int COLD_SECONDS = 1800;
+    /** 冷场判定秒数：无人发言超过此时间则提新话题（15 分钟） */
+    private static final int COLD_SECONDS = 900;
 
     private final EchoService echoService;
 

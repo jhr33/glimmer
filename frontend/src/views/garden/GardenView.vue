@@ -14,6 +14,7 @@ import FireflyCanvas from '@/components/FireflyCanvas.vue'
 const router = useRouter()
 const userStore = useUserStore()
 const user = computed(() => userStore.userInfo || {})
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 const totalFirefly = computed(() => user.value.totalFirefly ?? 0)
 const fireflyBalance = computed(() => user.value.fireflyBalance ?? 0)
@@ -245,6 +246,7 @@ async function refreshUserInfo() {
 }
 
 async function handleWater(f) {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   const id = flowerIdOf(f)
   if (id == null) return
   if (!canWater(f)) {
@@ -313,6 +315,7 @@ function handleFieldClick() {
 }
 
 async function handleWaterAll() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   const needWater = myFlowers.value.filter(f => canWater(f))
   if (needWater.length === 0) {
     ElMessage.info('没有需要浇水的花朵')

@@ -10,12 +10,14 @@ const route = useRoute()
 const router = useRouter()
 const userStore = useUserStore()
 const currentUserId = computed(() => userStore.userInfo?.id)
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 // 举报弹窗
 const reportDialog = ref(null)
 
 function openReportLetter() {
   if (!letter.value) return
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   reportDialog.value?.open()
 }
 
@@ -76,6 +78,7 @@ async function fetchDetail() {
 }
 
 async function handleReply() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (!replyContent.value.trim()) {
     ElMessage.warning('请输入回复内容')
     return
@@ -97,6 +100,7 @@ async function handleReply() {
 }
 
 async function handleThank() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   thankLoading.value = true
   try {
     await thankLetter(letterId.value)
@@ -162,8 +166,8 @@ onMounted(() => {
           <el-tag v-else-if="isReceiver" size="small" type="warning" effect="plain">待回复</el-tag>
         </div>
 
-        <!-- 回复区：仅收信人且未回复时可回复 -->
-        <div v-if="isReceiver && !replied" class="reply-section">
+        <!-- 回复区：仅登录的收信人且未回复时可回复 -->
+        <div v-if="isLoggedIn && isReceiver && !replied" class="reply-section">
           <h3 class="reply-title">回信</h3>
           <el-input
             v-model="replyContent"
@@ -171,7 +175,8 @@ onMounted(() => {
             :rows="6"
             maxlength="500"
             show-word-limit
-            placeholder="写一封温柔的回信…"
+            placeholder="写一封温柔的回信…（登录后可回复）"
+            :disabled="!isLoggedIn"
           />
           <div class="reply-actions">
             <el-button
@@ -193,16 +198,27 @@ onMounted(() => {
           show-icon
           class="replied-tip"
         />
+        <el-alert
+          v-else-if="!isLoggedIn && isReceiver"
+          title="请登录后查看信件内容并回复"
+          type="info"
+          :closable="false"
+          show-icon
+          class="replied-tip"
+        />
 
-        <!-- 感谢按钮：收信人可用 -->
+        <!-- 感谢按钮：登录的收信人可用 -->
         <div v-if="isReceiver" class="thank-section">
-          <el-button
-            :loading="thankLoading"
-            :disabled="hasThanked()"
+          <button
+            class="thank-heart-btn letter-thank-btn"
+            :class="{ thanked: hasThanked() }"
+            :disabled="hasThanked() || thankLoading"
             @click="handleThank"
+            :title="hasThanked() ? '已感谢' : '感谢这封信'"
           >
-            {{ hasThanked() ? '已感谢' : '感谢这封信' }}
-          </el-button>
+            <span v-if="thankLoading" class="thank-loading">⋯</span>
+            <span v-else class="heart-icon">{{ hasThanked() ? '❤️' : '🤍' }}</span>
+          </button>
         </div>
 
         <!-- 举报按钮：AI（回音）写的信不显示举报按钮 -->
@@ -245,18 +261,19 @@ onMounted(() => {
 }
 .source-bottle {
   margin: 14px 0;
-  padding: 14px;
-  background: #f0f5ff;
-  border-radius: 8px;
-  border-left: 4px solid #409eff;
+  padding: 14px 16px;
+  background: #fbf6ea;
+  border-radius: 6px;
+  border-left: 3px solid #d4a857;
 }
 .source-title {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  color: #409eff;
+  color: #9a6b2e;
   margin-bottom: 8px;
 }
 .source-bottle-content {
+  font-family: 'LXGW WenKai', 'KaiTi', '楷体', 'STKaiti', '华文楷体', serif;
   font-size: 13px;
   color: #303133;
   line-height: 1.7;
@@ -273,20 +290,44 @@ onMounted(() => {
   margin-bottom: 4px;
 }
 .source-reply-content {
+  font-family: 'LXGW WenKai', 'KaiTi', '楷体', 'STKaiti', '华文楷体', serif;
   font-size: 13px;
   color: #606266;
   line-height: 1.7;
   white-space: pre-wrap;
 }
 .letter-content {
+  font-family: 'LXGW WenKai', 'KaiTi', '楷体', 'STKaiti', '华文楷体', serif;
   white-space: pre-wrap;
   word-break: break-word;
-  line-height: 1.9;
-  font-size: 15px;
-  color: #303133;
-  background: #fef7ea;
-  padding: 20px;
-  border-radius: 8px;
+  line-height: 2;
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  color: #4a3a28;
+  /* 信笺纸质感：暖色纸张 + 横向行线 */
+  background-color: #fdfbf2;
+  background-image: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent calc(2em - 1px),
+    #ece0c4 calc(2em - 1px),
+    #ece0c4 2em
+  );
+  padding: 2em 30px 1.6em 58px;
+  border-radius: 3px;
+  border: 1px solid #e8dcc0;
+  box-shadow: 0 6px 20px rgba(120, 90, 40, 0.1), 0 1px 3px rgba(120, 90, 40, 0.08);
+  position: relative;
+}
+/* 信笺左侧装订红线 */
+.letter-content::before {
+  content: '';
+  position: absolute;
+  left: 38px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: rgba(196, 84, 82, 0.35);
 }
 .letter-status {
   margin-top: 14px;
@@ -314,5 +355,54 @@ onMounted(() => {
   margin-top: 12px;
   display: flex;
   justify-content: flex-end;
+}
+
+/* 感谢爱心按钮 */
+.thank-heart-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: 1px solid #dcdfe6;
+  border-radius: 10px;
+  padding: 10px 18px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #606266;
+  transition: all 0.2s ease;
+}
+.thank-heart-btn:hover:not(:disabled) {
+  border-color: #f56c6c;
+  color: #f56c6c;
+  background: #fef0f0;
+}
+.thank-heart-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.thank-heart-btn.thanked {
+  border-color: #f56c6c;
+  background: #fef0f0;
+  color: #f56c6c;
+}
+.thank-heart-btn .heart-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+.thank-heart-btn .thank-label {
+  font-size: 14px;
+}
+.thank-heart-btn .thank-loading {
+  font-size: 18px;
+  line-height: 1;
+  animation: thankLoading 0.8s ease-in-out infinite;
+}
+@keyframes thankLoading {
+  0%, 100% { opacity: 0.4; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+.letter-thank-btn {
+  padding: 12px 22px;
+  border-radius: 12px;
 }
 </style>

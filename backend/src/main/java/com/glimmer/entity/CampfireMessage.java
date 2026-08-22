@@ -31,5 +31,11 @@ public class CampfireMessage {
 
     private String content;
 
+    /** 被引用的消息ID */
+    private Long quotedMessageId;
+
+    /** 被引用的消息内容（冗余存储，便于显示） */
+    private String quotedContent;
+
     private LocalDateTime createdAt;
 }

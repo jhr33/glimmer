@@ -65,7 +65,7 @@ public class DriftBottleController {
     @Operation(summary = "查看漂流瓶内容（仅已捡到后可查看）")
     @GetMapping("/api/bottles/{bottleId}")
     public Result<BottleVO> getBottleContent(@PathVariable Long bottleId) {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
         BottleVO vo = driftBottleService.getBottleContent(userId, bottleId);
         return Result.success(vo);
     }
@@ -90,7 +90,7 @@ public class DriftBottleController {
     @Operation(summary = "查看我的瓶子回复（仅瓶主可看）")
     @GetMapping("/api/bottles/{bottleId}/replies")
     public Result<List<BottleReplyVO>> getBottleReplies(@PathVariable Long bottleId) {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
         List<BottleReplyVO> list = driftBottleService.getBottleReplies(userId, bottleId);
         return Result.success(list);
     }

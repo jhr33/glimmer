@@ -322,6 +322,7 @@ onMounted(() => {
   color: #303133;
 }
 .letter-preview {
+  font-family: 'LXGW WenKai', 'KaiTi', '楷体', 'STKaiti', '华文楷体', serif;
   font-size: 13px;
   color: #606266;
   word-break: break-word;

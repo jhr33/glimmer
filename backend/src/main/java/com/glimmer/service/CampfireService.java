@@ -51,7 +51,7 @@ public interface CampfireService {
     /**
      * 发送消息（通过 WebSocket 推送到 /topic/campfire/{campfireId}）
      */
-    CampfireMessageVO sendMessage(Long userId, Long campfireId, String content);
+    CampfireMessageVO sendMessage(Long userId, Long campfireId, String content, Long quotedMessageId);
 
     /**
      * 熄灭篝火（仅创建者可操作，系统默认篝火不可熄灭）

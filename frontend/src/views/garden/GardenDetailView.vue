@@ -12,6 +12,7 @@ import { useUserStore } from '@/stores/user'
 
 const userStore = useUserStore()
 const user = computed(() => userStore.userInfo || {})
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 const totalFirefly = computed(() => user.value.totalFirefly ?? 0)
 const fireflyBalance = computed(() => user.value.fireflyBalance ?? 0)
@@ -187,6 +188,7 @@ function redeemDisabledReason(ft) {
 }
 
 async function handleRedeem(ft) {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (redeemDisabled(ft)) return
   try {
     await redeemFlower({ flowerTypeId: flowerTypeIdOf(ft) })
@@ -200,6 +202,7 @@ async function handleRedeem(ft) {
 }
 
 async function handleWater(f) {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   const id = flowerIdOf(f)
   if (id == null) return
   if (!canWater(f)) return
@@ -328,6 +331,15 @@ onMounted(() => {
                 已开花 🌸
               </el-button>
               <el-tooltip
+                v-if="!isLoggedIn"
+                content="请登录后浇水"
+                placement="top"
+              >
+                <span>
+                  <el-button disabled>💧 浇水（{{ WATER_COST }} 萤火）</el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip
                 v-else-if="!canWater(f)"
                 :content="waterDisabledReason(f)"
                 placement="top"
@@ -408,7 +420,16 @@ onMounted(() => {
 
             <div class="shop-actions">
               <el-tooltip
-                v-if="redeemDisabled(ft)"
+                v-if="!isLoggedIn"
+                content="请登录后兑换"
+                placement="top"
+              >
+                <span>
+                  <el-button disabled>兑换</el-button>
+                </span>
+              </el-tooltip>
+              <el-tooltip
+                v-else-if="redeemDisabled(ft)"
                 :content="redeemDisabledReason(ft)"
                 placement="top"
               >

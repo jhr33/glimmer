@@ -61,6 +61,12 @@ service.interceptors.response.use(
 )
 
 function handleUnauthorized() {
+  const token = sessionStorage.getItem('glimmer_token')
+  // 游客模式（无 token）：不跳转登录页，静默拒绝
+  if (!token) {
+    return
+  }
+  // 已登录用户 token 失效：清除登录态并跳转登录页
   sessionStorage.removeItem('glimmer_token')
   sessionStorage.removeItem('glimmer_user')
   // 避免在登录页重复跳转

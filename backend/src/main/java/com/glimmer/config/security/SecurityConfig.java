@@ -55,7 +55,23 @@ public class SecurityConfig {
                 // 白名单接口（见开发文档 §2.1.3 / §4.3）
                 .requestMatchers("/api/auth/**").permitAll()
                 .requestMatchers("/api/announcements", "/api/announcements/**").permitAll()
+                // 公共只读接口：游客可浏览（所有写操作仍需登录）
+                // —— 小篝火：列表 / 详情 / 历史消息 ——
+                .requestMatchers("GET", "/api/campfires").permitAll()
+                .requestMatchers("GET", "/api/campfires/{campfireId}").permitAll()
+                .requestMatchers("GET", "/api/campfires/{campfireId}/messages").permitAll()
+                // —— 漂流瓶：公海列表 / 详情 / 回复列表 / 放回（捡瓶/投瓶/回复/感谢仍是 POST，不放行） ——
                 .requestMatchers("GET", "/api/bottles").permitAll()
+                .requestMatchers("GET", "/api/bottles/{bottleId}").permitAll()
+                .requestMatchers("GET", "/api/bottles/{bottleId}/replies").permitAll()
+                .requestMatchers("POST", "/api/bottles/{bottleId}/release").permitAll()
+                // —— 萤火花园：花类型 / 花朵列表 / 花朵详情（浇水 / 兑换仍是 POST，不放行） ——
+                .requestMatchers("GET", "/api/flower-types").permitAll()
+                .requestMatchers("GET", "/api/flowers").permitAll()
+                .requestMatchers("GET", "/api/flowers/{flowerId}").permitAll()
+                // —— 用户公开信息：他人花园页 / 公开资料页 ——
+                .requestMatchers("GET", "/api/users/{userId}/garden").permitAll()
+                .requestMatchers("GET", "/api/users/{userId}/profile").permitAll()
                 // WebSocket 端点（鉴权由 JwtHandshakeInterceptor 处理，见 §3.4.3）
                 .requestMatchers("/ws-campfire/**").permitAll()
                 // 接口文档

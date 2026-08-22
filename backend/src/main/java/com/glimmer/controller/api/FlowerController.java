@@ -49,7 +49,10 @@ public class FlowerController {
     @Operation(summary = "我的花朵列表")
     @GetMapping("/api/flowers")
     public Result<List<FlowerVO>> getMyFlowers() {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
+        if (userId == null) {
+            return Result.success(java.util.Collections.emptyList());
+        }
         List<FlowerVO> list = flowerService.getMyFlowers(userId);
         return Result.success(list);
     }
@@ -57,7 +60,10 @@ public class FlowerController {
     @Operation(summary = "花朵详情（含当前阶段、进度）")
     @GetMapping("/api/flowers/{flowerId}")
     public Result<FlowerVO> getFlowerDetail(@PathVariable Long flowerId) {
-        Long userId = SecurityUtils.getCurrentUserId();
+        Long userId = SecurityUtils.getCurrentUserIdOrNull();
+        if (userId == null) {
+            return Result.success(null);
+        }
         FlowerVO vo = flowerService.getFlowerDetail(userId, flowerId);
         return Result.success(vo);
     }

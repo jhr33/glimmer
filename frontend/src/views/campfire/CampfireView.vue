@@ -18,6 +18,7 @@ import ReportDialog from '@/components/ReportDialog.vue'
 
 const userStore = useUserStore()
 const currentUserId = computed(() => userStore.userInfo?.id)
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 const router = useRouter()
 
 const reportDialog = ref(null)
@@ -25,6 +26,7 @@ const reportTargetId = ref(null)
 
 function openReportMessage(msg) {
   if (!msg) return
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   const id = msg.id ?? msg.messageId ?? msg.message_id
   if (id == null) {
     ElMessage.warning('消息ID缺失，无法举报')
@@ -73,8 +75,17 @@ const subscription = ref(null)
 const messageListRef = ref(null)
 const messageLoading = ref(false)
 
-// 10分钟超时自动退出
-const IDLE_TIMEOUT_MS = 10 * 60 * 1000
+// 历史消息分页加载
+// 规则：page=1是最新的100条，向上翻加载更早的，最多10页
+const messagePage = ref(1)
+const messagePageSize = 100
+const hasMoreMessages = ref(true)
+const loadingMoreMessages = ref(false)
+const MAX_HISTORY_PAGES = 10
+const loadedPageCount = ref(1) // 已加载的页数（默认加载了第1页）
+
+// 20分钟超时自动退出
+const IDLE_TIMEOUT_MS = 20 * 60 * 1000
 const IDLE_STORAGE_KEY = 'glimmer_campfire_last_active'
 
 function readLastActive() {
@@ -134,7 +145,11 @@ function typeTagType(t) {
 }
 
 function formatTime(t) {
-  return t || '-'
+  if (!t) return '-'
+  const d = new Date(t)
+  if (isNaN(d.getTime())) return String(t)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
 function handleBanned(e) {
@@ -159,6 +174,7 @@ async function fetchList() {
 }
 
 function openCreateDialog() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (isBanned.value) {
     ElMessage.error('账号已被封禁，无法操作')
     return
@@ -198,13 +214,22 @@ async function enterCampfire(campfire) {
   detailLoading.value = true
   messages.value = []
   inputContent.value = ''
+  // 重置分页状态
+  messagePage.value = 1
+  hasMoreMessages.value = true
+  loadedPageCount.value = 1
   try {
-    const joinRes = await joinCampfire(id, { displayMode: currentMode.value })
-    // 使用后端返回的成员信息（含 anonymousName）
-    if (joinRes?.data?.anonymousName) {
-      currentIdentityName.value = joinRes.data.anonymousName
+    // 游客模式跳过 join，仅围观
+    if (isLoggedIn.value) {
+      const joinRes = await joinCampfire(id, { displayMode: currentMode.value })
+      // 使用后端返回的成员信息（含 anonymousName）
+      if (joinRes?.data?.anonymousName) {
+        currentIdentityName.value = joinRes.data.anonymousName
+      } else {
+        currentIdentityName.value = userStore.userInfo?.nickname || '旅人'
+      }
     } else {
-      currentIdentityName.value = userStore.userInfo?.nickname || '旅人'
+      currentIdentityName.value = '游客'
     }
     const res = await getCampfire(id)
     activeCampfire.value = res.data
@@ -223,17 +248,78 @@ async function enterCampfire(campfire) {
 async function loadMessages(id) {
   messageLoading.value = true
   try {
-    const res = await getCampfireMessages(id, { page: 1, size: 50 })
+    // 默认加载第1页（最新的100条）
+    const res = await getCampfireMessages(id, { page: 1, size: messagePageSize })
     const list = pickList(res.data)
     messages.value = list
+    messagePage.value = 1
+    loadedPageCount.value = 1
+    hasMoreMessages.value = list.length >= messagePageSize
     await nextTick()
     scrollToBottom()
   } catch (e) {
     messages.value = []
+    hasMoreMessages.value = false
     handleBanned(e)
   } finally {
     messageLoading.value = false
   }
+}
+
+/** 向上滚动加载更多历史消息 */
+async function loadMoreMessages(id) {
+  if (loadingMoreMessages.value || !hasMoreMessages.value) return
+  loadingMoreMessages.value = true
+  try {
+    const nextPage = messagePage.value + 1
+    if (nextPage > MAX_HISTORY_PAGES) {
+      hasMoreMessages.value = false
+      return
+    }
+    const res = await getCampfireMessages(id, { page: nextPage, size: messagePageSize })
+    const list = pickList(res.data)
+    if (list.length > 0) {
+      // 保存加载前的滚动位置
+      const el = messageListRef.value
+      const previousScrollHeight = el?.scrollHeight || 0
+      const previousScrollTop = el?.scrollTop || 0
+
+      // 在消息列表前面添加更早的消息
+      messages.value = [...list, ...messages.value]
+      messagePage.value = nextPage
+      loadedPageCount.value++
+      // 判断是否还有更多
+      hasMoreMessages.value = list.length >= messagePageSize && nextPage < MAX_HISTORY_PAGES
+      await nextTick()
+      
+      // 恢复滚动位置
+      if (el) {
+        const newScrollHeight = el.scrollHeight
+        const diff = newScrollHeight - previousScrollHeight
+        el.scrollTop = previousScrollTop + diff
+      }
+    } else {
+      hasMoreMessages.value = false
+    }
+  } catch (e) {
+    hasMoreMessages.value = false
+  } finally {
+    loadingMoreMessages.value = false
+  }
+}
+
+/** 监听滚动事件，向上滚动加载更多 */
+function onMessageScroll() {
+  const el = messageListRef.value
+  if (!el) return
+  // 当滚动到顶部时加载更多
+  if (el.scrollTop <= 100) {
+    loadMoreMessages(getCurrentCampfireId())
+  }
+}
+
+function getCurrentCampfireId() {
+  return campfireIdOf(activeCampfire.value)
 }
 
 function connectStomp(campfireId) {
@@ -375,9 +461,11 @@ async function toggleIdentity() {
     } else {
       currentIdentityName.value = '匿名旅人'
     }
-    // 重新拉取历史消息，刷新消息中的名称
-    const msgRes = await getCampfireMessages(id, { page: 1, size: 50 })
-    messages.value = pickList(msgRes.data)
+    // 重置分页状态并重新加载历史消息，刷新消息中的名称
+    messagePage.value = 1
+    hasMoreMessages.value = true
+    loadedPageCount.value = 1
+    await loadMessages(id)
     ElMessage.success(`已切换为：${currentIdentityName.value}`)
   } catch (e) {
     handleBanned(e)
@@ -388,6 +476,7 @@ async function toggleIdentity() {
 }
 
 function sendMessage() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (isBanned.value) {
     ElMessage.error('账号已被封禁，无法发送')
     return
@@ -400,15 +489,55 @@ function sendMessage() {
   }
   sending.value = true
   try {
+    const payload = { content }
+    if (replyingTo.value?.id) {
+      payload.quotedMessageId = replyingTo.value.id
+    }
     stompClient.value.publish({
       destination: `/app/campfire/${campfireIdOf(activeCampfire.value)}/send`,
-      body: JSON.stringify({ content })
+      body: JSON.stringify(payload)
     })
     inputContent.value = ''
+    replyingTo.value = null
   } catch (e) {
     ElMessage.error('发送失败，请重试')
   } finally {
     sending.value = false
+  }
+}
+
+// 引用回复状态
+const replyingTo = ref(null) // { id, anonymousName, content }
+
+function startReply(msg) {
+  const content = msg.content || ''
+  replyingTo.value = {
+    id: msg.id ?? msg.messageId,
+    anonymousName: msg.anonymousName ?? msg.anonymous_name ?? '旅人',
+    content: content.length > 50 ? content.substring(0, 50) + '...' : content
+  }
+}
+
+function cancelReply() {
+  replyingTo.value = null
+}
+
+function scrollToQuoted(messageId) {
+  if (!messageId) return
+  const idx = messages.value.findIndex(m => (m.id ?? m.messageId) === messageId)
+  if (idx < 0) {
+    ElMessage.info('该历史消息不在当前加载范围内')
+    return
+  }
+  const el = messageListRef.value
+  if (el) {
+    const target = el.children[idx + 1] // +1 because first child is the load-more-tip
+    if (target) {
+      el.scrollTo({ top: target.offsetTop - 20, behavior: 'smooth' })
+      // 高亮效果
+      target.classList.add('highlight-quoted')
+      setTimeout(() => target.classList.remove('highlight-quoted'), 1500)
+    }
   }
 }
 
@@ -446,15 +575,15 @@ function handleVisibilityChange() {
     // 记录离开时间
     writeLastActive(activeCampfire.value)
   } else if (document.visibilityState === 'visible') {
-    // 检查超过10分钟→自动退出
+    // 检查超过20分钟→自动退出
     const last = readLastActive()
     const now = Date.now()
     if (last && last.campfireId === campfireIdOf(activeCampfire.value)) {
       if (now - last.time > IDLE_TIMEOUT_MS) {
-        ElMessage.info('离开已超过10分钟，已自动退出篝火')
+        ElMessage.info('离开已超过20分钟，已自动退出篝火')
         backToList()
       } else {
-        // 10分钟内→无需重新进入，更新活跃时间
+        // 20分钟内→无需重新进入，更新活跃时间
         writeLastActive(activeCampfire.value)
       }
     }
@@ -469,11 +598,11 @@ watch(() => userStore.userInfo?.status, () => {
 onMounted(async () => {
   isBanned.value = userStore.userInfo?.status === 'banned'
   document.addEventListener('visibilitychange', handleVisibilityChange)
-  // 检查是否有10分钟内未超时的篝火会话 → 直接进入该篝火
+  // 检查是否有20分钟内未超时的篝火会话 → 直接进入该篝火
   const last = readLastActive()
   const now = Date.now()
   if (last && now - last.time <= IDLE_TIMEOUT_MS) {
-    // 10分钟内返回 → 自动进入上次篝火，无需重选
+    // 20分钟内返回 → 自动进入上次篝火，无需重选
     try {
       await fetchList()
       const campfire = campfireList.value.find((c) => campfireIdOf(c) === last.campfireId)
@@ -499,7 +628,7 @@ onBeforeRouteLeave(async (to, from, next) => {
 })
 
 onUnmounted(() => {
-  // 记录离开时间但不 leaveCampfire — 10分钟内回来可恢复
+  // 记录离开时间但不 leaveCampfire — 20分钟内回来可恢复
   if (activeCampfire.value) {
     writeLastActive(activeCampfire.value)
   }
@@ -546,7 +675,11 @@ onUnmounted(() => {
               <span class="meta-time">{{ formatTime(c.createdAt || c.created_at) }}</span>
             </div>
             <div class="card-footer">
-              <el-button type="primary" size="small" @click="enterCampfire(c)">
+              <el-button
+                type="primary"
+                size="small"
+                @click="enterCampfire(c)"
+              >
                 进入
               </el-button>
               <span v-if="isCreator(c)" class="creator-flag">创建者</span>
@@ -609,9 +742,14 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <div class="chat-body" ref="messageListRef">
+      <div class="chat-body" ref="messageListRef" @scroll="onMessageScroll">
+        <!-- 加载更多提示 -->
+        <div v-if="loadingMoreMessages" class="load-more-tip">加载中...</div>
+        <div v-else-if="!hasMoreMessages && messages.length > 0" class="load-more-tip">火星已经消散啦</div>
+        <div v-else-if="hasMoreMessages && messages.length > 0" class="load-more-tip">↑ 向上滚动加载更多历史消息</div>
+        
         <el-empty
-          v-if="messages.length === 0"
+          v-if="messages.length === 0 && !messageLoading"
           description="还没有消息，说点什么吧"
           :image-size="80"
         />
@@ -623,28 +761,54 @@ onUnmounted(() => {
         >
           <div class="bubble">
             <div class="bubble-name">{{ m.anonymousName ?? m.anonymous_name ?? '旅人' }}</div>
+            <!-- 引用内容显示 -->
+            <div v-if="m.quotedContent" class="quote-block" @click="scrollToQuoted(m.quotedMessageId)">
+              <div class="quote-line"></div>
+              <div class="quote-content">
+                <div class="quote-author">{{ m.quotedAnonymousName || '旅人' }}</div>
+                <div class="quote-text">{{ m.quotedContent }}</div>
+              </div>
+            </div>
             <div class="bubble-content">{{ m.content }}</div>
-            <div class="bubble-time">
-              <span>{{ formatTime(m.createdAt || m.created_at) }}</span>
-              <el-button
-                v-if="!isMine(m) && !m.isFromBot"
-                size="small"
-                link
-                type="danger"
-                class="report-btn"
-                @click.stop="openReportMessage(m)"
-              >
-                举报
-              </el-button>
+            <div class="bubble-actions">
+              <span class="bubble-time">{{ formatTime(m.createdAt || m.created_at) }}</span>
+              <div class="bubble-btns">
+                <!-- 回复按钮 -->
+                <button
+                  class="reply-btn"
+                  v-if="!isMine(m) && !m.isFromBot"
+                  @click.stop="startReply(m)"
+                >
+                  回复
+                </button>
+                <!-- 举报按钮 -->
+                <button
+                  v-if="!isMine(m) && !m.isFromBot"
+                  class="report-btn"
+                  @click.stop="openReportMessage(m)"
+                >
+                  举报
+                </button>
+              </div>
             </div>
           </div>
         </div>
       </div>
 
+      <!-- 引用回复预览 -->
+      <div v-if="replyingTo" class="reply-preview-bar">
+        <div class="reply-preview-info">
+          <span class="reply-label">回复</span>
+          <span class="reply-target-name">{{ replyingTo.anonymousName }}</span>
+          <span class="reply-target-content">{{ replyingTo.content }}</span>
+        </div>
+        <el-icon class="reply-close" @click="cancelReply">✕</el-icon>
+      </div>
+
       <div class="chat-input">
         <el-input
           v-model="inputContent"
-          placeholder="写一句温暖的话…"
+          :placeholder="replyingTo ? `回复 ${replyingTo.anonymousName}...` : '写一句温暖的话…'"
           maxlength="500"
           :disabled="isBanned"
           @keyup.enter="sendMessage"
@@ -843,6 +1007,15 @@ onUnmounted(() => {
   padding: 16px;
   box-sizing: border-box;
 }
+.load-more-tip {
+  text-align: center;
+  padding: 8px;
+  font-size: 12px;
+  color: #909399;
+  background: #f5f7fa;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
 .message-item {
   display: flex;
   margin-bottom: 12px;
@@ -874,20 +1047,147 @@ onUnmounted(() => {
   line-height: 1.6;
   white-space: pre-wrap;
 }
-.bubble-time {
-  font-size: 11px;
-  margin-top: 4px;
-  opacity: 0.7;
+.bubble-actions {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  margin-top: 6px;
   gap: 8px;
 }
-.report-btn {
-  opacity: 0.85;
-  padding: 0;
-  height: auto;
+.bubble-time {
   font-size: 11px;
+  opacity: 0.6;
+  flex-shrink: 0;
+}
+.bubble-btns {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+/* 回复按钮 */
+.reply-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+  color: #909399;
+  opacity: 0.7;
+}
+.reply-btn:hover {
+  color: #409eff;
+  opacity: 1;
+}
+/* 举报按钮 */
+.report-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 11px;
+  color: #909399;
+  opacity: 0.7;
+}
+.report-btn:hover {
+  color: #f56c6c;
+  opacity: 1;
+}
+/* 引用块 */
+.quote-block {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  margin: 4px 0;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.message-item.mine .quote-block {
+  background: rgba(255, 255, 255, 0.3);
+}
+.quote-block:hover {
+  background: rgba(0, 0, 0, 0.1);
+}
+.message-item.mine .quote-block:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+.quote-line {
+  width: 3px;
+  min-height: 100%;
+  background: #909399;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.quote-content {
+  flex: 1;
+  min-width: 0;
+}
+.quote-author {
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.7;
+  margin-bottom: 2px;
+}
+.quote-text {
+  font-size: 12px;
+  opacity: 0.65;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 引用高亮效果 */
+.message-item.highlight-quoted .bubble {
+  animation: highlight-pulse 1.5s ease;
+}
+@keyframes highlight-pulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06); }
+  50% { box-shadow: 0 0 16px rgba(245, 108, 108, 0.5); }
+}
+/* 回复预览栏 */
+.reply-preview-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 16px;
+  background: #ecf5ff;
+  border-top: 1px solid #d9ecff;
+  font-size: 12px;
+}
+.reply-preview-info {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+}
+.reply-label {
+  color: #409eff;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.reply-target-name {
+  color: #303133;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.reply-target-content {
+  color: #909399;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reply-close {
+  cursor: pointer;
+  color: #909399;
+  padding: 0 8px;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.reply-close:hover {
+  color: #f56c6c;
 }
 .chat-input {
   display: flex;

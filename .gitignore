@@ -41,3 +41,4 @@ frontend/.vite/
 mysql_data/
 uploads_data/
 data/
+/backend/application-pord.yml

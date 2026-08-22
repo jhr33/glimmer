@@ -49,10 +49,20 @@ async function toggleEchoMode(val) {
   }
 }
 
-// 顶部导航菜单
+// 顶部导航菜单（游客版：不含通知、反馈、管理入口）
+const guestMenuItems = computed(() => [
+  { index: '/home', label: '首页' },
+  { index: '/driftBottle', label: '漂流瓶' },
+  { index: '/letter', label: '信件' },
+  { index: '/campfire', label: '篝火' },
+  { index: '/ai', label: '树洞' },
+  { index: '/garden', label: '花园' },
+  { index: '/announcements', label: '公告' }
+])
+// 已登录：显示完整导航菜单
 const menuItems = computed(() => {
   const items = [
-    { index: '/', label: '首页' },
+    { index: '/home', label: '首页' },
     { index: '/driftBottle', label: '漂流瓶' },
     { index: '/letter', label: '信件' },
     { index: '/campfire', label: '篝火' },
@@ -137,7 +147,7 @@ onUnmounted(() => {
           <span class="logo-sub">萤光</span>
         </div>
 
-        <!-- 已登录：显示导航菜单 + 通知 + 用户 -->
+        <!-- 已登录：显示完整导航菜单 + 通知 + 用户 -->
         <template v-if="isLoggedIn">
           <el-menu
             :default-active="activeMenu"
@@ -187,10 +197,25 @@ onUnmounted(() => {
           </div>
         </template>
 
-        <!-- 未登录：显示登录/注册按钮 -->
+        <!-- 未登录（游客）：显示浏览用导航菜单 + 登录/注册按钮 -->
         <template v-else>
+          <el-menu
+            :default-active="activeMenu"
+            mode="horizontal"
+            class="nav-menu"
+            :ellipsis="false"
+            @select="handleSelect"
+          >
+            <el-menu-item
+              v-for="item in guestMenuItems"
+              :key="item.index"
+              :index="item.index"
+            >
+              {{ item.label }}
+            </el-menu-item>
+          </el-menu>
+
           <div class="header-actions">
-            <el-button text @click="router.push('/announcements')">公告</el-button>
             <el-button @click="goLogin">登录</el-button>
             <el-button type="primary" @click="goRegister">注册</el-button>
           </div>

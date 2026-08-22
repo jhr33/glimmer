@@ -22,4 +22,13 @@ public class CampfireMessageVO {
      * true 时前端不显示举报按钮
      */
     private Boolean isFromBot;
+
+    /** 被引用的消息ID */
+    private Long quotedMessageId;
+
+    /** 被引用的消息内容 */
+    private String quotedContent;
+
+    /** 被引用消息的发送者昵称 */
+    private String quotedAnonymousName;
 }

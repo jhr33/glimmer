@@ -46,8 +46,11 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
                     return true;
                 }
             }
+            // 游客模式（无 token）：允许连接但不注入 userId，仅可围观收消息
+            log.info("WebSocket 游客模式连接：无 token，仅可围观");
+            return true;
         }
-        log.warn("WebSocket 握手鉴权失败：token 无效或缺失");
+        log.warn("WebSocket 握手鉴权失败：非 HTTP 请求");
         return false;
     }
 

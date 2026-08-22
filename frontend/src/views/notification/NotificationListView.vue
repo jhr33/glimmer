@@ -28,28 +28,28 @@ const typeTabs = [
   { key: 'feedback_reply', label: '反馈回复', type: 'primary' },
   { key: 'system', label: '系统', type: 'info' }
 ]
-const activeType = ref('')
+  const activeType = ref('')
 
 // 通知类型 → 标签/颜色映射（开发文档 5.4.9 节）
-const typeMap = {
-  report_result: { label: '举报结果', type: 'danger' },
-  feedback_reply: { label: '反馈回复', type: 'primary' },
-  announcement: { label: '公告', type: 'success' },
-  system: { label: '系统', type: 'info' },
-  bottle_reply: { label: '漂流瓶回复', type: 'warning' },
-  bottle_thank: { label: '感谢', type: 'success' },
-  appeal_result: { label: '申诉审核', type: 'warning' }
-}
+  const typeMap = {
+    report_result: { label: '举报结果', type: 'danger' },
+    feedback_reply: { label: '反馈回复', type: 'primary' },
+    announcement: { label: '公告', type: 'success' },
+    system: { label: '系统', type: 'info' },
+    bottle_reply: { label: '漂流瓶回复', type: 'warning' },
+    bottle_thank: { label: '感谢', type: 'success' },
+    appeal_result: { label: '申诉审核', type: 'warning' }
+  }
 
-function typeMeta(t) {
-  return typeMap[t] || { label: t || '通知', type: 'info' }
-}
+  function typeMeta(t) {
+    return typeMap[t] || { label: t || '通知', type: 'info' }
+  }
 
-function isRead(item) {
-  return !!(item.isRead ?? item.is_read)
-}
+  function isRead(item) {
+    return !!(item.isRead ?? item.is_read)
+  }
 
-function getTypeUnread(key) {
+  function getTypeUnread(key) {
   return notificationStore.getTypeUnread(key)
 }
 

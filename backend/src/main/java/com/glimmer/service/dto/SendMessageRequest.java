@@ -13,4 +13,7 @@ public class SendMessageRequest {
     @NotBlank(message = "内容不能为空")
     @Size(max = 2000, message = "内容最长2000个字符")
     private String content;
+
+    /** 被引用/回复的消息ID */
+    private Long quotedMessageId;
 }

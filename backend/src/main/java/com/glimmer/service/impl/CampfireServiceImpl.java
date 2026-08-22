@@ -199,28 +199,55 @@ public class CampfireServiceImpl implements CampfireService {
         if (campfire == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "篝火不存在");
         }
-        // 校验用户是该篝火成员
-        checkCampfireMember(userId, campfireId);
+        // 游客模式（userId=null）跳过成员校验，仅围观
+        if (userId != null) {
+            checkCampfireMember(userId, campfireId);
+        }
 
         List<Long> bannedMessageIds = reportMapper.selectApprovedTargetIds("campfire_message");
+        LocalDateTime threeDaysAgo = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusDays(3);
 
-        // 篝火聊天记录超过 24 小时前端不显示（数据库不删除，保留审计/申诉取证）
-        // 管理员通过 selectById 查单条审核申诉时不受此限制
-        LocalDateTime threshold = LocalDateTime.now(ZoneId.of("Asia/Shanghai")).minusHours(24);
+        // 查询3天内的消息总数
+        Long totalCount = campfireMessageMapper.selectCount(new LambdaQueryWrapper<CampfireMessage>()
+                .eq(CampfireMessage::getCampfireId, campfireId)
+                .ge(CampfireMessage::getCreatedAt, threeDaysAgo)
+                .notIn(bannedMessageIds != null && !bannedMessageIds.isEmpty(), CampfireMessage::getId, bannedMessageIds));
 
-        Page<CampfireMessage> pageParam = new Page<>(page, size);
+        int pageSize = Math.min(size, 100);
+        // 最多10页，每页100条 = 1000条
+        int maxPages = 10;
+        int requestedPage = page;
+        
+        // 如果请求的页码超过范围，返回空
+        if (requestedPage > maxPages) {
+            return new PageResult<>(java.util.Collections.emptyList(), Math.min(totalCount, 1000), pageSize, requestedPage);
+        }
+
+        // 按时间倒序查询（最新在前），page=1是最新的100条
         LambdaQueryWrapper<CampfireMessage> wrapper = new LambdaQueryWrapper<CampfireMessage>()
                 .eq(CampfireMessage::getCampfireId, campfireId)
-                .ge(CampfireMessage::getCreatedAt, threshold)
+                .ge(CampfireMessage::getCreatedAt, threeDaysAgo)
                 .notIn(bannedMessageIds != null && !bannedMessageIds.isEmpty(), CampfireMessage::getId, bannedMessageIds)
-                .orderByAsc(CampfireMessage::getCreatedAt);
-        IPage<CampfireMessage> result = campfireMessageMapper.selectPage(pageParam, wrapper);
-        List<CampfireMessage> records = result.getRecords();
+                .orderByDesc(CampfireMessage::getCreatedAt);
+
+        // 用OFFSET限制，最多1000条
+        long offset = (long)(requestedPage - 1) * pageSize;
+        if (totalCount > 1000) {
+            offset = totalCount - 1000 + (long)(requestedPage - 1) * pageSize;
+            if (offset < 0) offset = 0;
+        }
+        wrapper.last("LIMIT " + pageSize + " OFFSET " + offset);
+
+        List<CampfireMessage> records = campfireMessageMapper.selectList(wrapper);
+        // 转为正序（旧→新，符合聊天显示习惯）
+        java.util.Collections.reverse(records);
         List<CampfireMessageVO> list = records.stream()
                 .map(this::toMessageVO).collect(Collectors.toList());
-        // 批量注入 isFromBot（避免 N+1）
         fillIsFromBotForMessages(list, records);
-        return new PageResult<>(list, result.getTotal(), page, size);
+        fillQuotedInfo(list, records);
+        
+        long effectiveTotal = Math.min(totalCount, 1000);
+        return new PageResult<>(list, effectiveTotal, pageSize, requestedPage);
     }
 
     @Override
@@ -346,19 +373,19 @@ public class CampfireServiceImpl implements CampfireService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public CampfireMessageVO sendMessage(Long userId, Long campfireId, String content) {
+    public CampfireMessageVO sendMessage(Long userId, Long campfireId, String content, Long quotedMessageId) {
         // 1. 校验用户非 banned
         userService.checkUserNotMuted(userId);
         // 2. 违禁词检测
         bannedWordFilterService.check(content, "campfireMessage");
-        // 2. 校验用户是该篝火成员
+        // 3. 校验用户是该篝火成员
         CampfireMember member = checkCampfireMember(userId, campfireId);
-        // 3. 获取用户信息
+        // 4. 获取用户信息
         User user = userMapper.selectById(userId);
         if (user == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
-        // 4. 确定身份名称：优先用 Redis 缓存 → 成员的 anonymousName → fallback 生成
+        // 5. 确定身份名称
         String identityName = getCachedMemberName(campfireId, userId);
         if (identityName == null || identityName.isEmpty()) {
             identityName = member.getAnonymousName();
@@ -367,19 +394,38 @@ public class CampfireServiceImpl implements CampfireService {
             identityName = (user.getNickname() != null && !user.getNickname().isEmpty())
                     ? user.getNickname()
                     : AnonymousNameGenerator.generateStable(userId, campfireId);
-            // 回填到成员记录并缓存
             campfireMemberMapper.update(null, new LambdaUpdateWrapper<CampfireMember>()
                     .eq(CampfireMember::getId, member.getId())
                     .set(CampfireMember::getAnonymousName, identityName));
             cacheMemberName(campfireId, userId, identityName);
         }
-        // 5. 插入消息
+
+        // 6. 如果有引用消息，获取引用内容
+        String quotedContent = null;
+        if (quotedMessageId != null) {
+            CampfireMessage quotedMsg = campfireMessageMapper.selectById(quotedMessageId);
+            if (quotedMsg != null) {
+                // 校验引用消息属于同一篝火
+                if (!quotedMsg.getCampfireId().equals(campfireId)) {
+                    throw new BusinessException(ErrorCode.PARAM_ERROR, "引用的消息不属于当前篝火");
+                }
+                quotedContent = quotedMsg.getContent();
+                // 限制引用内容长度
+                if (quotedContent != null && quotedContent.length() > 100) {
+                    quotedContent = quotedContent.substring(0, 100) + "...";
+                }
+            }
+        }
+
+        // 7. 插入消息
         LocalDateTime now = LocalDateTime.now();
         CampfireMessage message = new CampfireMessage();
         message.setCampfireId(campfireId);
         message.setUserId(userId);
         message.setAnonymousName(identityName);
         message.setContent(content);
+        message.setQuotedMessageId(quotedMessageId);
+        message.setQuotedContent(quotedContent);
         message.setCreatedAt(now);
         campfireMessageMapper.insert(message);
 
@@ -387,14 +433,19 @@ public class CampfireServiceImpl implements CampfireService {
         updateMemberLastActive(userId, campfireId, now);
 
         CampfireMessageVO vo = toMessageVO(message);
-        // 单条消息也注入 isFromBot（sendMessage 入口 userId 已知是本人，但为 bot 账号发言场景兜底）
-        Set<Long> ids = Set.of(userId);
-        vo.setIsFromBot(Boolean.TRUE.equals(selectBotUserIdSet(ids).contains(userId)));
+        // 设置引用消息的发送者昵称
+        if (quotedMessageId != null) {
+            CampfireMessage quotedMsg = campfireMessageMapper.selectById(quotedMessageId);
+            if (quotedMsg != null) {
+                vo.setQuotedAnonymousName(quotedMsg.getAnonymousName());
+            }
+        }
+        vo.setIsFromBot(Boolean.TRUE.equals(selectBotUserIdSet(Set.of(userId)).contains(userId)));
 
-        // 6. 通过 WebSocket 推送到 /topic/campfire/{campfireId}
+        // 8. 通过 WebSocket 推送
         messagingTemplate.convertAndSend("/topic/campfire/" + campfireId, vo);
 
-        log.info("篝火消息发送成功: userId={}, campfireId={}, messageId={}, anonymousName={}", userId, campfireId, message.getId(), identityName);
+        log.info("篝火消息发送成功: userId={}, campfireId={}, messageId={}, quotedMessageId={}", userId, campfireId, message.getId(), quotedMessageId);
         return vo;
     }
 
@@ -500,6 +551,8 @@ public class CampfireServiceImpl implements CampfireService {
         vo.setAnonymousName(message.getAnonymousName());
         vo.setContent(message.getContent());
         vo.setCreatedAt(message.getCreatedAt());
+        vo.setQuotedMessageId(message.getQuotedMessageId());
+        vo.setQuotedContent(message.getQuotedContent());
         return vo;
     }
 
@@ -519,6 +572,41 @@ public class CampfireServiceImpl implements CampfireService {
         for (int i = 0; i < list.size() && i < messages.size(); i++) {
             Long uid = messages.get(i).getUserId();
             list.get(i).setIsFromBot(uid != null && botIds.contains(uid));
+        }
+    }
+
+    /**
+     * 批量填充引用消息的发送者昵称
+     */
+    private void fillQuotedInfo(List<CampfireMessageVO> list, List<CampfireMessage> messages) {
+        if (list == null || list.isEmpty()) return;
+
+        // 收集所有被引用的消息ID
+        Set<Long> quotedIds = new HashSet<>();
+        for (CampfireMessage msg : messages) {
+            if (msg.getQuotedMessageId() != null) {
+                quotedIds.add(msg.getQuotedMessageId());
+            }
+        }
+
+        // 批量查询被引用消息的发送者昵称
+        Map<Long, String> quotedNames = new HashMap<>();
+        if (!quotedIds.isEmpty()) {
+            List<CampfireMessage> quotedMsgs = campfireMessageMapper.selectBatchIds(quotedIds);
+            for (CampfireMessage qm : quotedMsgs) {
+                quotedNames.put(qm.getId(), qm.getAnonymousName());
+            }
+        }
+
+        // 填充引用昵称
+        for (int i = 0; i < list.size() && i < messages.size(); i++) {
+            CampfireMessageVO vo = list.get(i);
+            CampfireMessage msg = messages.get(i);
+
+            // 填充引用消息昵称
+            if (msg.getQuotedMessageId() != null) {
+                vo.setQuotedAnonymousName(quotedNames.get(msg.getQuotedMessageId()));
+            }
         }
     }
 

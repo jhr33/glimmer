@@ -25,6 +25,10 @@ public class JwtUtils {
     }
 
     private byte[] padSecret(String secret) {
+        // 兼容未配置环境变量的场景：空字符串或 null 时使用默认内置密钥
+        if (secret == null || secret.isEmpty()) {
+            secret = "glimmer-default-secret-key-2026-please-change";
+        }
         byte[] bytes = secret.getBytes(StandardCharsets.UTF_8);
         if (bytes.length >= 32) {
             return bytes;

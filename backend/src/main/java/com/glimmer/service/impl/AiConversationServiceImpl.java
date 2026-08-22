@@ -55,9 +55,9 @@ public class AiConversationServiceImpl implements AiConversationService {
     /** 开启会话消耗代币 */
     private static final int START_CONVERSATION_TOKEN_COST = 1;
     /** 免费会话每日 token 上限 */
-    private static final int FREE_DAILY_QUOTA = 9999;
+    private static final int FREE_DAILY_QUOTA = 30000;
     /** 每次代币解锁增加的 token 数 */
-    private static final int UNLOCK_QUOTA_STEP = 18888;
+    private static final int UNLOCK_QUOTA_STEP = 70000;
     /** 摘要提取时取最近的消息条数（10 轮 = 20 条） */
     private static final int SUMMARY_MESSAGE_LIMIT = 20;
     /** 上海时区，用于每日额度重置判断 */

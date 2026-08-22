@@ -12,7 +12,8 @@ import {
   thankBottle,
   thankBottleReply,
   sinkBottle,
-  getMyBottles
+  getMyBottles,
+  getBottles
 } from '@/api/driftBottle'
 import { writeLetter } from '@/api/letter'
 import { useUserStore } from '@/stores/user'
@@ -21,6 +22,7 @@ import ReportDialog from '@/components/ReportDialog.vue'
 const userStore = useUserStore()
 const route = useRoute()
 const currentUserId = computed(() => userStore.userInfo?.id)
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 // 举报弹窗
 const reportDialog = ref(null)
@@ -29,6 +31,7 @@ const reportTargetId = ref(null)
 
 function openReportBottle() {
   if (!openedBottle.value) return
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   reportTargetType.value = 'drift_bottle'
   reportTargetId.value = bottleIdOf(openedBottle.value)
   reportDialog.value?.open()
@@ -36,6 +39,7 @@ function openReportBottle() {
 
 function openReportReply(reply) {
   if (!reply) return
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   reportTargetType.value = 'bottle_reply'
   reportTargetId.value = reply.id ?? reply.replyId ?? reply.reply_id
   reportDialog.value?.open()
@@ -281,17 +285,34 @@ async function handlePick() {
   }
   pickLoading.value = true
   try {
-    const res = await pickBottle(pickMode.value)
-    const data = res.data
-    if (!data || !data.found || !data.bottle) {
-      ElMessage.info(noBottleMsg.value)
-      return
+    let bottleId = null
+    let pickedAt = '-'
+
+    if (!isLoggedIn.value) {
+      // 游客模式：从公海列表随机取一个瓶子查看
+      const listRes = await getBottles({ page: 1, size: 50 })
+      const list = pickList(listRes.data?.list || listRes.data?.records || listRes.data)
+      if (!list || list.length === 0) {
+        ElMessage.info(noBottleMsg.value)
+        return
+      }
+      const random = list[Math.floor(Math.random() * list.length)]
+      bottleId = random.id ?? random.bottleId ?? random.bottle_id
+      pickedAt = random.createdAt || random.created_at || '-'
+    } else {
+      // 已登录：正常捡瓶
+      const res = await pickBottle(pickMode.value)
+      const data = res.data
+      if (!data || !data.found || !data.bottle) {
+        ElMessage.info(noBottleMsg.value)
+        return
+      }
+      const bottle = data.bottle
+      bottleId = bottleIdOf(bottle)
+      pickedAt = bottle.createdAt || bottle.created_at || '-'
     }
-    const bottle = data.bottle
-    pickedBottle.value = {
-      id: bottleIdOf(bottle),
-      pickedAt: bottle.createdAt || bottle.created_at || '-'
-    }
+
+    pickedBottle.value = { id: bottleId, pickedAt }
     openedBottle.value = null
     opened.value = false
     scene.value = 'picked'
@@ -323,18 +344,35 @@ async function openWashedBottle(bottle) {
   bottle.loading = true
   pickLoading.value = true
   try {
-    const res = await pickBottle(pickMode.value)
-    const data = res.data
-    if (!data || !data.found || !data.bottle) {
-      ElMessage.info(noBottleMsg.value)
-      removeBottle(bottle.uid)
-      return
+    let bottleId = null
+    let pickedAt = '-'
+
+    if (!isLoggedIn.value) {
+      // 游客模式：从公海列表随机取一个瓶子查看
+      const listRes = await getBottles({ page: 1, size: 50 })
+      const list = pickList(listRes.data?.list || listRes.data?.records || listRes.data)
+      if (!list || list.length === 0) {
+        ElMessage.info(noBottleMsg.value)
+        removeBottle(bottle.uid)
+        return
+      }
+      const random = list[Math.floor(Math.random() * list.length)]
+      bottleId = random.id ?? random.bottleId ?? random.bottle_id
+      pickedAt = random.createdAt || random.created_at || '-'
+    } else {
+      const res = await pickBottle(pickMode.value)
+      const data = res.data
+      if (!data || !data.found || !data.bottle) {
+        ElMessage.info(noBottleMsg.value)
+        removeBottle(bottle.uid)
+        return
+      }
+      const bk = data.bottle
+      bottleId = bottleIdOf(bk)
+      pickedAt = bk.createdAt || bk.created_at || '-'
     }
-    const bk = data.bottle
-    pickedBottle.value = {
-      id: bottleIdOf(bk),
-      pickedAt: bk.createdAt || bk.created_at || '-'
-    }
+
+    pickedBottle.value = { id: bottleId, pickedAt }
     openedBottle.value = null
     opened.value = false
     scene.value = 'picked'
@@ -402,6 +440,7 @@ async function handleRelease() {
 }
 
 function openReplyDialog() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (isBanned.value) {
     ElMessage.error('账号已被封禁，无法操作')
     return
@@ -434,6 +473,7 @@ async function handleReply() {
 
 async function handleThankBottle() {
   if (!openedBottle.value) return
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   try {
     await thankBottle(bottleIdOf(openedBottle.value))
     ElMessage.success('已表达感谢')
@@ -508,6 +548,7 @@ async function handleSink(item) {
 }
 
 async function handleThankReply(reply) {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   try {
     await thankBottleReply(reply.id)
     ElMessage.success('已表达感谢')
@@ -524,6 +565,7 @@ const letterLoading = ref(false)
 const letterTarget = ref(null) // { replyId, userId }
 
 function openLetterDialog(reply) {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (isBanned.value) {
     ElMessage.error('账号已被封禁，无法操作')
     return
@@ -644,51 +686,51 @@ onUnmounted(() => {
           <div class="bottle-visual">🍾</div>
         </div>
       </div>
-      <!-- 海滩波浪（浅白色，顶部水平，波浪线朝下凸起） -->
-      <div class="break-wave">
-        <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="waveGrad1" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="rgba(13,148,136,0.45)" />
-              <stop offset="20%" stop-color="rgba(125,200,230,0.55)" />
-              <stop offset="50%" stop-color="rgba(220,250,255,0.6)" />
-              <stop offset="78%" stop-color="rgba(248,252,254,0.92)" />
-              <stop offset="100%" stop-color="rgba(255,255,255,1)" />
-            </linearGradient>
-          </defs>
-          <path class="wave-path" fill="url(#waveGrad1)" d="M0,0 L1440,0 L1440,80 C1320,55 1200,35 1080,50 C960,65 840,30 720,45 C600,60 480,30 360,40 C240,50 120,65 0,50 Z" />
-        </svg>
-      </div>
-      <div class="break-wave break-wave-2">
-        <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="waveGrad2" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="rgba(28,207,176,0.4)" />
-              <stop offset="20%" stop-color="rgba(130,205,230,0.5)" />
-              <stop offset="50%" stop-color="rgba(210,245,250,0.55)" />
-              <stop offset="78%" stop-color="rgba(248,252,254,0.85)" />
-              <stop offset="100%" stop-color="rgba(255,255,255,0.95)" />
-            </linearGradient>
-          </defs>
-          <path class="wave-path" fill="url(#waveGrad2)" d="M0,0 L1440,0 L1440,80 C1300,60 1160,40 1020,55 C880,70 740,35 600,50 C460,65 320,35 180,50 C100,58 40,52 0,48 Z" />
-        </svg>
-      </div>
-      <div class="break-wave break-wave-3">
-        <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-          <defs>
-            <linearGradient id="waveGrad3" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stop-color="rgba(45,212,191,0.3)" />
-              <stop offset="20%" stop-color="rgba(140,210,230,0.4)" />
-              <stop offset="50%" stop-color="rgba(200,240,245,0.45)" />
-              <stop offset="78%" stop-color="rgba(248,252,254,0.78)" />
-              <stop offset="100%" stop-color="rgba(255,255,255,0.9)" />
-            </linearGradient>
-          </defs>
-          <path class="wave-path" fill="url(#waveGrad3)" d="M0,0 L1440,0 L1440,80 C1350,48 1220,32 1100,52 C980,72 860,32 740,42 C620,52 500,72 380,38 C260,4 140,56 0,40 Z" />
-        </svg>
-      </div>
       <!-- 沙滩 -->
       <div class="beach">
+        <!-- 海滩波浪（置于沙滩顶部，随沙滩高度浮动，始终贴着水沙交界线） -->
+        <div class="break-wave">
+          <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="waveGrad1" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="rgba(13,148,136,0.45)" />
+                <stop offset="20%" stop-color="rgba(125,200,230,0.55)" />
+                <stop offset="50%" stop-color="rgba(220,250,255,0.6)" />
+                <stop offset="78%" stop-color="rgba(248,252,254,0.92)" />
+                <stop offset="100%" stop-color="rgba(255,255,255,1)" />
+              </linearGradient>
+            </defs>
+            <path class="wave-path" fill="url(#waveGrad1)" d="M0,0 L1440,0 L1440,80 C1320,55 1200,35 1080,50 C960,65 840,30 720,45 C600,60 480,30 360,40 C240,50 120,65 0,50 Z" />
+          </svg>
+        </div>
+        <div class="break-wave break-wave-2">
+          <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="waveGrad2" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="rgba(28,207,176,0.4)" />
+                <stop offset="20%" stop-color="rgba(130,205,230,0.5)" />
+                <stop offset="50%" stop-color="rgba(210,245,250,0.55)" />
+                <stop offset="78%" stop-color="rgba(248,252,254,0.85)" />
+                <stop offset="100%" stop-color="rgba(255,255,255,0.95)" />
+              </linearGradient>
+            </defs>
+            <path class="wave-path" fill="url(#waveGrad2)" d="M0,0 L1440,0 L1440,80 C1300,60 1160,40 1020,55 C880,70 740,35 600,50 C460,65 320,35 180,50 C100,58 40,52 0,48 Z" />
+          </svg>
+        </div>
+        <div class="break-wave break-wave-3">
+          <svg class="wave-svg" viewBox="0 0 1440 80" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="waveGrad3" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stop-color="rgba(45,212,191,0.3)" />
+                <stop offset="20%" stop-color="rgba(140,210,230,0.4)" />
+                <stop offset="50%" stop-color="rgba(200,240,245,0.45)" />
+                <stop offset="78%" stop-color="rgba(248,252,254,0.78)" />
+                <stop offset="100%" stop-color="rgba(255,255,255,0.9)" />
+              </linearGradient>
+            </defs>
+            <path class="wave-path" fill="url(#waveGrad3)" d="M0,0 L1440,0 L1440,80 C1350,48 1220,32 1100,52 C980,72 860,32 740,42 C620,52 500,72 380,38 C260,4 140,56 0,40 Z" />
+          </svg>
+        </div>
         <!-- 沙滩纹理 -->
         <div class="beach-texture"></div>
         <!-- 沙滩操作区 -->
@@ -698,13 +740,14 @@ onUnmounted(() => {
           <!-- 公海/私海模式切换 -->
           <div class="pick-mode-toggle">
             <span class="mode-label">捞瓶海域：</span>
-            <el-radio-group v-model="pickMode" size="small" :disabled="isBanned">
+            <el-radio-group v-if="isLoggedIn" v-model="pickMode" size="small" :disabled="isBanned">
               <el-radio-button value="public">🌍 公海</el-radio-button>
               <el-radio-button value="private">🏝️ 私海</el-radio-button>
             </el-radio-group>
           </div>
           <div class="ocean-actions">
             <el-button
+              v-if="isLoggedIn"
               size="large"
               round
               :disabled="isBanned"
@@ -720,9 +763,10 @@ onUnmounted(() => {
               :disabled="isBanned"
               @click="handlePick"
             >
-              🤚 {{ isPrivate ? '捞自己的瓶子' : '捡漂流瓶' }}
+              🤚 捡漂流瓶
             </el-button>
             <el-button
+              v-if="isLoggedIn"
               size="large"
               round
               @click="goMine"
@@ -791,12 +835,15 @@ onUnmounted(() => {
             >
               回复
             </el-button>
-            <el-button
+            <button
+              class="thank-heart-btn"
+              :class="{ thanked: hasThankedBottle(openedBottle) }"
               :disabled="hasThankedBottle(openedBottle)"
               @click="handleThankBottle"
+              :title="hasThankedBottle(openedBottle) ? '已感谢' : '表达感谢'"
             >
-              {{ hasThankedBottle(openedBottle) ? '已感谢' : '感谢' }}
-            </el-button>
+              <span class="heart-icon">{{ hasThankedBottle(openedBottle) ? '❤️' : '🤍' }}</span>
+            </button>
             <el-button v-if="!openedBottle.isFromBot" @click="openReportBottle">举报</el-button>
             <el-button :disabled="isBanned" @click="handleRelease">放回大海</el-button>
             <el-button @click="backToMain">返回</el-button>
@@ -873,7 +920,7 @@ onUnmounted(() => {
               <el-button
                 v-if="item.status === 'drifting'"
                 size="small"
-                :disabled="isBanned"
+                :disabled="!isLoggedIn || isBanned"
                 @click.stop="handleSink(item)"
               >
                 沉底
@@ -978,14 +1025,15 @@ onUnmounted(() => {
               <div class="reply-meta">
                 <span>{{ r.createdAt || r.created_at || '-' }}</span>
                 <div class="reply-actions">
-                  <el-button
-                    size="small"
-                    link
+                  <button
+                    class="thank-heart-btn thank-heart-btn-small"
+                    :class="{ thanked: hasThankedReply(r) }"
                     :disabled="hasThankedReply(r)"
                     @click="handleThankReply(r)"
+                    :title="hasThankedReply(r) ? '已感谢' : '表达感谢'"
                   >
-                    {{ hasThankedReply(r) ? '已感谢' : '感谢' }}
-                  </el-button>
+                    <span class="heart-icon">{{ hasThankedReply(r) ? '❤️' : '🤍' }}</span>
+                  </button>
                   <el-button
                     size="small"
                     link
@@ -1234,7 +1282,8 @@ onUnmounted(() => {
 /* 海滩波浪（浅白色，向下凸起，起伏进退） */
 .break-wave {
   position: absolute;
-  bottom: 16%;
+  /* 锚定沙滩顶部，随沙滩高度浮动，始终贴着水沙交界线（不再用相对 ocean-scene 的百分比） */
+  top: -40px;
   left: 0;
   width: 100%;
   height: 80px;
@@ -1255,14 +1304,12 @@ onUnmounted(() => {
 }
 /* 第二层（更远，更小） */
 .break-wave-2 {
-  bottom: 16%;
   z-index: 9;
   height: 72px;
   opacity: 0.75;
 }
 /* 第三层（最远，最小，最透） */
 .break-wave-3 {
-  bottom: 16%;
   z-index: 8;
   height: 64px;
   opacity: 0.55;
@@ -1299,7 +1346,7 @@ onUnmounted(() => {
   position: absolute;
   bottom: 0; left: 0; right: 0;
   z-index: 5;
-  height: 22%;
+  /* 高度跟随内容，避免窗口缩小时按钮被 ocean-scene 的 overflow:hidden 裁掉 */
   min-height: 130px;
   background: linear-gradient(180deg, rgba(245,225,180,0) 0%, #f5e1b4 18%, #e8c98a 50%, #d4ad6a 100%);
   box-shadow: 0 -8px 24px rgba(0,0,0,0.12);
@@ -1586,6 +1633,7 @@ onUnmounted(() => {
   border-radius: 12px;
 }
 .bottle-content {
+  font-family: 'Ma Shan Zheng', 'KaiTi', '楷体', 'STKaiti', cursive;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.8;
@@ -1687,6 +1735,7 @@ onUnmounted(() => {
   border-radius: 10px;
 }
 .mine-item-content {
+  font-family: 'Ma Shan Zheng', 'KaiTi', '楷体', 'STKaiti', cursive;
   font-size: 14px;
   color: #303133;
   margin-bottom: 8px;
@@ -1727,6 +1776,7 @@ onUnmounted(() => {
   color: #909399;
 }
 .detail-content {
+  font-family: 'Ma Shan Zheng', 'KaiTi', '楷体', 'STKaiti', cursive;
   white-space: pre-wrap;
   word-break: break-word;
   line-height: 1.8;
@@ -1754,6 +1804,7 @@ onUnmounted(() => {
   font-weight: 600;
 }
 .reply-content {
+  font-family: 'Ma Shan Zheng', 'KaiTi', '楷体', 'STKaiti', cursive;
   white-space: pre-wrap;
   word-break: break-word;
   color: #303133;
@@ -1771,5 +1822,59 @@ onUnmounted(() => {
   display: flex;
   gap: 4px;
   align-items: center;
+}
+
+/* 感谢爱心按钮 */
+.thank-heart-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid #dcdfe6;
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+  font-size: 14px;
+  color: #606266;
+  transition: all 0.2s ease;
+}
+.thank-heart-btn:hover:not(:disabled) {
+  border-color: #f56c6c;
+  color: #f56c6c;
+  background: #fef0f0;
+}
+.thank-heart-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.thank-heart-btn.thanked {
+  border-color: #f56c6c;
+  background: #fef0f0;
+  color: #f56c6c;
+}
+.thank-heart-btn .heart-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+.thank-heart-btn .thank-label {
+  font-size: 13px;
+}
+/* 小尺寸（回复列表用） */
+.thank-heart-btn-small {
+  border: none;
+  padding: 4px 8px;
+  background: transparent;
+}
+.thank-heart-btn-small:hover:not(:disabled) {
+  background: #fef0f0;
+  border-color: transparent;
+}
+.thank-heart-btn-small.thanked {
+  background: transparent;
+  border-color: transparent;
+  color: #f56c6c;
+}
+.thank-heart-btn-small .heart-icon {
+  font-size: 15px;
 }
 </style>

@@ -274,7 +274,9 @@ onMounted(() => {
   if (userStore.isLoggedIn && !userStore.userInfo) {
     userStore.fetchUserInfo().catch(() => {})
   }
-  loadSignInStatus()
+  if (userStore.isLoggedIn) {
+    loadSignInStatus()
+  }
 })
 </script>
 

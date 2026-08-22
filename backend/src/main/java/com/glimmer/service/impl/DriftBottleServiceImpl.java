@@ -160,19 +160,21 @@ public class DriftBottleServiceImpl implements DriftBottleService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public BottleVO getBottleContent(Long userId, Long bottleId) {
-        // 校验已捡到
-        checkPicked(userId, bottleId);
-
         DriftBottle bottle = driftBottleMapper.selectById(bottleId);
         if (bottle == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "漂流瓶不存在");
         }
 
-        // 更新 pick_record.opened=1
-        driftBottlePickRecordMapper.update(null, new LambdaUpdateWrapper<DriftBottlePickRecord>()
-                .eq(DriftBottlePickRecord::getBottleId, bottleId)
-                .eq(DriftBottlePickRecord::getUserId, userId)
-                .set(DriftBottlePickRecord::getOpened, 1));
+        // 游客模式（userId=null）跳过捡瓶校验和 pick_record 更新
+        if (userId != null) {
+            // 校验已捡到
+            checkPicked(userId, bottleId);
+            // 更新 pick_record.opened=1
+            driftBottlePickRecordMapper.update(null, new LambdaUpdateWrapper<DriftBottlePickRecord>()
+                    .eq(DriftBottlePickRecord::getBottleId, bottleId)
+                    .eq(DriftBottlePickRecord::getUserId, userId)
+                    .set(DriftBottlePickRecord::getOpened, 1));
+        }
 
         BottleVO vo = toBottleVO(bottle);
         fillAnonymousNames(java.util.Collections.singletonList(vo));
@@ -181,6 +183,8 @@ public class DriftBottleServiceImpl implements DriftBottleService {
 
     @Override
     public void releaseBottle(Long userId, Long bottleId) {
+        // 游客模式（userId=null）直接返回，无状态变更
+        if (userId == null) return;
         // 校验已捡到
         checkPicked(userId, bottleId);
         // 不做任何状态变更，瓶子继续漂流，pick_record 保留
@@ -224,11 +228,11 @@ public class DriftBottleServiceImpl implements DriftBottleService {
         if (bottle == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "漂流瓶不存在");
         }
-        // 仅瓶主可看
-        if (!userId.equals(bottle.getUserId())) {
+        // 游客模式（userId=null）跳过瓶主校验
+        if (userId != null && !userId.equals(bottle.getUserId())) {
             throw new BusinessException(ErrorCode.FORBIDDEN, "仅瓶主可查看回复");
         }
-        
+
         List<Long> bannedReplyIds = reportMapper.selectApprovedTargetIds("bottle_reply");
         
         List<DriftBottleReply> replies = driftBottleReplyMapper.selectList(

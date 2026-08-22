@@ -54,7 +54,7 @@ public class ChatController {
         }
         Long userId = Long.valueOf(principal.getName());
         // 调用 service：插入消息 + 广播到 /topic/campfire/{campfireId}
-        CampfireMessageVO vo = campfireService.sendMessage(userId, campfireId, request.getContent());
+        CampfireMessageVO vo = campfireService.sendMessage(userId, campfireId, request.getContent(), request.getQuotedMessageId());
         log.debug("WebSocket 篝火消息已处理: campfireId={}, messageId={}", campfireId, vo.getId());
     }
 

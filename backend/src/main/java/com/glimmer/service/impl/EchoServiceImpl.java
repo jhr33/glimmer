@@ -38,6 +38,8 @@ public class EchoServiceImpl implements EchoService {
     private static final String KEY_CAMPFIRE_SPOKE_PREFIX = "echo:campfire_spoke:";
     /** Redis key prefix: 回音上次发言类型（reply=回应 / topic=新话题），防止连续提新话题 */
     private static final String KEY_CAMPFIRE_LAST_TYPE_PREFIX = "echo:campfire_last_type:";
+    /** Redis key prefix: 篝火静音状态（用户让回音闭嘴时设为1，呼唤回音时清除） */
+    private static final String KEY_CAMPFIRE_MUTED_PREFIX = "echo:campfire_muted:";
 
     /** 每个漂流瓶任务最多处理数 */
     private static final int MAX_BOTTLES_PER_RUN = 20;
@@ -253,7 +255,6 @@ public class EchoServiceImpl implements EchoService {
 
         User bot = getOrCreateBotUser();
         LocalDateTime now = LocalDateTime.now(ZoneId.of("Asia/Shanghai"));
-        LocalDateTime coldThreshold = now.minusSeconds(coldSeconds);
 
         // 只处理系统默认公共篝火（type=default），用户自定义篝火不接入 AI
         List<Campfire> activeCampfires = campfireMapper.selectList(
@@ -282,13 +283,6 @@ public class EchoServiceImpl implements EchoService {
                             .ne(CampfireMember::getUserId, bot.getId()));
             int humanMembers = memberCount != null ? memberCount.intValue() : 0;
 
-            // 动态计算回应延迟：成员越少越及时，成员越多越慢（让真人优先）
-            int responseDelay = calcResponseDelay(humanMembers);
-            LocalDateTime responseThreshold = now.minusSeconds(responseDelay);
-
-            log.debug("[回音篝火] campfireId={}, name={}, humanMembers={}, responseDelay={}s",
-                    campfire.getId(), campfire.getName(), humanMembers, responseDelay);
-
             // 查询最近几条消息作为上下文
             List<CampfireMessage> recentMsgs = campfireMessageMapper.selectList(
                     new LambdaQueryWrapper<CampfireMessage>()
@@ -301,10 +295,18 @@ public class EchoServiceImpl implements EchoService {
 
             CampfireMessage lastMsg = recentMsgs.isEmpty() ? null : recentMsgs.get(recentMsgs.size() - 1);
 
+            // 检查静音状态变化：扫描最近消息中是否包含闭嘴/呼唤关键词
+            checkMuteStatus(campfire.getId(), recentMsgs, bot);
+
+            // 如果被静音，跳过此篝火
+            if (isCampfireMuted(campfire.getId())) {
+                log.debug("[回音篝火] {} 已被用户静音，跳过", campfire.getId());
+                continue;
+            }
+
             // 决策：该不该发言，发什么类型
             String actionType = decideCampfireAction(campfire.getId(), bot, lastMsg, recentMsgs,
-                    coldSeconds, responseDelay, coldThreshold, responseThreshold,
-                    hasReplyPrompt, hasTopicPrompt, humanMembers);
+                    coldSeconds, now, hasReplyPrompt, hasTopicPrompt, humanMembers);
             if (actionType == null) {
                 continue;
             }
@@ -372,6 +374,7 @@ public class EchoServiceImpl implements EchoService {
             vo.setAnonymousName(message.getAnonymousName());
             vo.setContent(message.getContent());
             vo.setCreatedAt(message.getCreatedAt());
+            vo.setIsFromBot(true);
             messagingTemplate.convertAndSend("/topic/campfire/" + campfire.getId(), vo);
 
             // 更新篝火活跃时间
@@ -388,105 +391,146 @@ public class EchoServiceImpl implements EchoService {
         return processed > 0;
     }
 
+    /** 检查是否被静音 */
+    private boolean isCampfireMuted(Long campfireId) {
+        return "1".equals(redis.get(KEY_CAMPFIRE_MUTED_PREFIX + campfireId));
+    }
+
+    /** 静音关键词 */
+    private static final String[] MUTE_KEYWORDS = {"闭嘴", "安静", "别说了", "别说话", "嘘", "闭麦", "你能不能别说了"};
+    /** 呼唤关键词 */
+    private static final String[] UNMUTE_KEYWORDS = {"回音", "echo", "Echo", "ECHO"};
+
     /**
-     * 根据成员数计算回应延迟
-     * 成员越少越及时（没人时立刻接话），成员越多越慢（让真人优先）
+     * 扫描最近消息，检查是否包含静音/呼唤关键词tt
+     * 只检查回音上次发言之后的真人消息
      */
-    private int calcResponseDelay(int humanMembers) {
-        if (humanMembers <= 1) {
-            // 只有1人或没人 → 最及时，3秒
-            return 3;
-        } else if (humanMembers <= 3) {
-            // 少数人 → 10秒
-            return 10;
-        } else if (humanMembers <= 10) {
-            // 中等 → 20秒
-            return 20;
-        } else {
-            // 很多人 → 30秒，让真人充分交流
-            return 30;
+    private void checkMuteStatus(Long campfireId, List<CampfireMessage> recentMsgs, User bot) {
+        if (recentMsgs == null || recentMsgs.isEmpty()) return;
+
+        // 获取回音上次发言时间
+        String lastSpokeTime = redis.get(KEY_CAMPFIRE_SPOKE_PREFIX + campfireId);
+        LocalDateTime spokeAt = null;
+        if (lastSpokeTime != null) {
+            try {
+                spokeAt = LocalDateTime.parse(lastSpokeTime);
+            } catch (Exception e) {
+                // 忽略解析失败
+            }
+        }
+
+        // 从最新消息往前扫描，找最近一条真人消息
+        for (int i = recentMsgs.size() - 1; i >= 0; i--) {
+            CampfireMessage msg = recentMsgs.get(i);
+            // 跳过回音自己的消息
+            if (msg.getUserId().equals(bot.getId())) continue;
+            // 如果有回音发言时间，只检查之后的真人消息
+            if (spokeAt != null && msg.getCreatedAt().isBefore(spokeAt)) break;
+
+            String content = msg.getContent();
+            if (content == null) continue;
+
+            // 检查呼唤关键词（优先级高，解除静音）
+            for (String kw : UNMUTE_KEYWORDS) {
+                if (content.contains(kw)) {
+                    redis.delete(KEY_CAMPFIRE_MUTED_PREFIX + campfireId);
+                    log.info("[回音篝火] {} 用户呼唤回音，解除静音", campfireId);
+                    return;
+                }
+            }
+
+            // 检查静音关键词
+            for (String kw : MUTE_KEYWORDS) {
+                if (content.contains(kw)) {
+                    redis.set(KEY_CAMPFIRE_MUTED_PREFIX + campfireId, "1",
+                            java.time.Duration.ofHours(1));
+                    log.info("[回音篝火] {} 用户让回音闭嘴，进入静音", campfireId);
+                    return;
+                }
+            }
         }
     }
 
     /**
      * 决策回音是否该发言、发什么类型
-     * - reply：回应用户发言（真人发言后过 responseDelay 无人接话）
-     * - topic：提新话题（冷场超过 coldSeconds）
-     * - null：不发言
+     * 新规则：
+     * - 无消息 → 提新话题（仅当有人在线时）
+     * - 最后一条是真人发言：
+     *   - 只有1人在线 → 直接回应（延迟3秒）
+     *   - 多人在线但3分钟内只有同一人发言 → 回应
+     *   - 多人在线且3分钟内有多人发言 → 不接话
+     * - 最后一条是回音发言：
+     *   - 无人回应超过15分钟 → 提新话题
+     *   - 否则不发言
      */
     private String decideCampfireAction(Long campfireId, User bot, CampfireMessage lastMsg,
                                         List<CampfireMessage> recentMsgs,
-                                        int coldSeconds, int responseDelay,
-                                        LocalDateTime coldThreshold,
-                                        LocalDateTime responseThreshold,
+                                        int coldSeconds, LocalDateTime now,
                                         boolean hasReplyPrompt, boolean hasTopicPrompt,
                                         int humanMembers) {
+        // 无人在线 → 不发言
+        if (humanMembers == 0) {
+            return null;
+        }
+
         // 无消息 → 提新话题
         if (lastMsg == null) {
-            log.debug("[回音篝火] {} 无消息，提新话题", campfireId);
+            log.debug("[回音篝火] {} 无消息但有人在线，提新话题", campfireId);
             return hasTopicPrompt ? "topic" : null;
         }
 
         boolean lastIsBot = lastMsg.getUserId().equals(bot.getId());
 
         if (!lastIsBot) {
-            // 最后一条是真人发的
-            if (lastMsg.getCreatedAt().isAfter(responseThreshold)) {
-                // 还在 responseDelay 内，可能还有人要接话，等等
-                return null;
-            }
-            // 真人发言后超过 responseDelay 没人接 → 回应这条消息
-            log.debug("[回音篝火] {} 真人发言后 {}s 无人接(humanMembers={})，回应", campfireId, responseDelay, humanMembers);
-            return hasReplyPrompt ? "reply" : (hasTopicPrompt ? "topic" : null);
-        }
+            // 最后一条是真人发言
+            LocalDateTime threeMinAgo = now.minusMinutes(3);
 
-        // 最后一条是回音发的
-        String spokeKey = KEY_CAMPFIRE_SPOKE_PREFIX + campfireId;
-        String lastSpokeTime = redis.get(spokeKey);
-        boolean hasHumanResponse = false;
-        CampfireMessage lastHumanMsg = null;
-        if (lastSpokeTime != null) {
-            try {
-                LocalDateTime spokeAt = LocalDateTime.parse(lastSpokeTime);
-                CampfireMessage afterMsg = campfireMessageMapper.selectOne(
-                        new LambdaQueryWrapper<CampfireMessage>()
-                                .eq(CampfireMessage::getCampfireId, campfireId)
-                                .gt(CampfireMessage::getCreatedAt, spokeAt)
-                                .ne(CampfireMessage::getUserId, bot.getId())
-                                .orderByDesc(CampfireMessage::getCreatedAt)
-                                .last("LIMIT 1"));
-                if (afterMsg != null) {
-                    hasHumanResponse = true;
-                    lastHumanMsg = afterMsg;
+            if (humanMembers == 1) {
+                // 只有1人在线 → 直接回应（检查3秒延迟，由定时任务10秒轮询保证）
+                if (lastMsg.getCreatedAt().isAfter(now.minusSeconds(3))) {
+                    return null; // 3秒内，等一下
                 }
-            } catch (Exception e) {
-                log.warn("[回音篝火] 解析发言时间失败: campfireId={}", campfireId);
+                log.debug("[回音篝火] {} 仅1人在线，回应", campfireId);
+                return hasReplyPrompt ? "reply" : (hasTopicPrompt ? "topic" : null);
             }
-        }
 
-        if (hasHumanResponse) {
-            // 真人接了话 → 检查真人最后发言是否需要回音接话
-            if (lastHumanMsg.getCreatedAt().isAfter(responseThreshold)) {
-                // 真人刚说话，等等
+            // 多人在线：检查3分钟内是否只有同一个用户发言
+            List<CampfireMessage> recent3Min = campfireMessageMapper.selectList(
+                    new LambdaQueryWrapper<CampfireMessage>()
+                            .eq(CampfireMessage::getCampfireId, campfireId)
+                            .gt(CampfireMessage::getCreatedAt, threeMinAgo)
+                            .ne(CampfireMessage::getUserId, bot.getId())
+                            .orderByDesc(CampfireMessage::getCreatedAt));
+
+            if (recent3Min.isEmpty()) {
+                // 3分钟内无真人发言（可能消息在3分钟前），检查冷场
+                if (lastMsg.getCreatedAt().isBefore(now.minusSeconds(coldSeconds))) {
+                    log.debug("[回音篝火] {} 冷场超过{}秒，提新话题", campfireId, coldSeconds);
+                    return hasTopicPrompt ? "topic" : null;
+                }
                 return null;
             }
-            // 真人接话后超过 responseDelay 没人接 → 回应真人
-            log.debug("[回音篝火] {} 真人接话后 {}s 无后续，回应", campfireId, responseDelay);
-            return hasReplyPrompt ? "reply" : (hasTopicPrompt ? "topic" : null);
-        }
 
-        // 回音最后发言且无真人回应
-        String lastType = redis.get(KEY_CAMPFIRE_LAST_TYPE_PREFIX + campfireId);
-        if ("reply".equals(lastType)) {
-            // 上次发的是回应，没人理 → 冷场超过阈值才提新话题
-            if (lastMsg.getCreatedAt().isBefore(coldThreshold)) {
-                log.debug("[回音篝火] {} 回应后冷场 {}s，提新话题", campfireId, coldSeconds);
-                return hasTopicPrompt ? "topic" : null;
+            // 检查3分钟内是否只有同一个用户发言
+            long distinctUsers = recent3Min.stream()
+                    .map(CampfireMessage::getUserId)
+                    .distinct()
+                    .count();
+            if (distinctUsers <= 1) {
+                // 3分钟内只有同一人发言 → 回应
+                if (lastMsg.getCreatedAt().isAfter(now.minusSeconds(3))) {
+                    return null; // 3秒延迟
+                }
+                log.debug("[回音篝火] {} 多人在线但3分钟内只有同一人发言，回应", campfireId);
+                return hasReplyPrompt ? "reply" : (hasTopicPrompt ? "topic" : null);
             }
+
+            // 多人活跃交流中 → 不接话
             return null;
         }
-        // 上次发的是新话题，没人理 → 不再重复
-        log.debug("[回音篝火] {} 新话题无人回应，跳过", campfireId);
+
+        // 最后一条是回音发言 → 不发言，避免回音自言自语进入循环
+        log.debug("[回音篝火] {} 最后一条是回音消息，不发言避免循环", campfireId);
         return null;
     }
 

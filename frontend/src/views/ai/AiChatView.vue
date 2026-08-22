@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   createConversation,
@@ -18,6 +18,7 @@ const scene = ref('list')
 
 // 用户封禁标记（4015）
 const isBanned = ref(false)
+const isLoggedIn = computed(() => userStore.isLoggedIn)
 
 // === 会话列表 ===
 const listLoading = ref(false)
@@ -68,7 +69,7 @@ function canSend() {
   if (status !== 'active') return false
   // 配额校验：token 用完不可发送
   const quotaUsed = c.quotaUsed ?? 0
-  const quotaLimit = c.quotaLimit ?? 9999
+  const quotaLimit = c.quotaLimit ?? 30000
   if (quotaUsed >= quotaLimit) return false
   return true
 }
@@ -78,7 +79,7 @@ function isQuotaExhausted() {
   const c = activeConversation.value
   if (!c) return false
   const quotaUsed = c.quotaUsed ?? 0
-  const quotaLimit = c.quotaLimit ?? 9999
+  const quotaLimit = c.quotaLimit ?? 30000
   return quotaUsed >= quotaLimit
 }
 
@@ -89,6 +90,7 @@ function showUnlockDialog() {
 
 // 解锁额度：消耗 1 代币，额度 +10
 async function handleUnlock() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   const c = activeConversation.value
   if (!c) return
   unlocking.value = true
@@ -155,6 +157,7 @@ function handlePageChange(p) {
 }
 
 async function handleNewConversation() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   if (isBanned.value) {
     ElMessage.error('账号已被封禁，无法操作')
     return
@@ -201,6 +204,7 @@ function backToList() {
 // === 发送消息 ===
 
 async function handleSend() {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
   const c = activeConversation.value
   if (!c) return
   // 防止并发发送：上一次流式请求未完成时，禁止发起新请求
@@ -360,7 +364,10 @@ watch(() => userStore.userInfo?.status, () => {
 
 onMounted(() => {
   syncUserStatus()
-  fetchList()
+  // 游客模式不加载会话列表
+  if (isLoggedIn.value) {
+    fetchList()
+  }
 })
 
 // 组件卸载时取消进行中的流式请求，释放浏览器 HTTP 连接
@@ -466,7 +473,7 @@ onUnmounted(() => {
 
       <!-- 输入框 -->
       <div class="chat-input">
-        <template v-if="canSend()">
+        <template v-if="canSend() || !isLoggedIn">
           <el-input
             v-model="inputContent"
             placeholder="输入消息…"
