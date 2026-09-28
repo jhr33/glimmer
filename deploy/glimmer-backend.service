@@ -12,6 +12,9 @@ After=network.target mysql.service redis-server.service
 [Service]
 Type=simple
 User=ubuntu
+# 环境变量文件：注入 MySQL/JWT/DeepSeek/阿里云短信/OSS 等密钥
+# （jar 内 application.yml 以 ${VAR} 占位符引用，无环境变量则取空值导致功能失败）
+EnvironmentFile=/home/ubuntu/app/.env
 # 工作目录固定在 /home/ubuntu/app：
 # Spring Boot 会自动读取该目录下的 application-prod.yml（含 DB 密码、JWT 密钥等，不入库）
 WorkingDirectory=/home/ubuntu/app
