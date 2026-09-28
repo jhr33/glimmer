@@ -1,6 +1,7 @@
 package com.glimmer.config.websocket;
 
 import com.glimmer.common.util.JwtUtils;
+import com.glimmer.config.security.LoginSessionManager;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.server.ServerHttpRequest;
 import org.springframework.http.server.ServerHttpResponse;
@@ -17,17 +18,23 @@ import java.util.Map;
  * WebSocket 握手 JWT 鉴权拦截器
  * 从握手时的查询参数 token 中提取 JWT 并校验，将 userId 注入 WebSocket Session attributes
  * 连接地址示例：ws://host/ws-campfire?token=xxx
+ *
+ * 同时校验单点登录会话（jti）：已在别处登录的旧会话不允许建立新连接。
  */
 @Slf4j
 @Component
 public class JwtHandshakeInterceptor implements HandshakeInterceptor {
 
     public static final String WS_USER_ID_KEY = "wsUserId";
+    /** 握手会话ID（jti），供 @MessageMapping 发消息时做单点登录校验 */
+    public static final String WS_JTI_KEY = "wsJti";
 
     private final JwtUtils jwtUtils;
+    private final LoginSessionManager loginSessionManager;
 
-    public JwtHandshakeInterceptor(JwtUtils jwtUtils) {
+    public JwtHandshakeInterceptor(JwtUtils jwtUtils, LoginSessionManager loginSessionManager) {
         this.jwtUtils = jwtUtils;
+        this.loginSessionManager = loginSessionManager;
     }
 
     @Override
@@ -41,7 +48,14 @@ public class JwtHandshakeInterceptor implements HandshakeInterceptor {
             if (StringUtils.hasText(token) && jwtUtils.isValid(token)) {
                 Long userId = jwtUtils.getUserId(token);
                 if (userId != null) {
+                    // 单点登录校验：会话已被新登录顶替则拒绝握手
+                    if (!loginSessionManager.isCurrentSession(userId, jwtUtils.getJti(token))) {
+                        log.warn("WebSocket 握手拒绝：会话已在其他地方登录, userId={}", userId);
+                        response.setStatusCode(org.springframework.http.HttpStatus.UNAUTHORIZED);
+                        return false;
+                    }
                     attributes.put(WS_USER_ID_KEY, userId);
+                    attributes.put(WS_JTI_KEY, jwtUtils.getJti(token));
                     log.info("WebSocket 握手鉴权成功: userId={}", userId);
                     return true;
                 }

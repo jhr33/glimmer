@@ -498,25 +498,49 @@ public class LetterServiceImpl implements LetterService {
                 .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
                 .map(User::getId)
                 .collect(Collectors.toSet());
+        // 无昵称的普通用户：批量预取统一匿名昵称（user.anonymous_name，24小时轮换）
+        List<Long> anonymousIds = users.stream()
+                .filter(u -> !botIds.contains(u.getId()))
+                .filter(u -> u.getNickname() == null || u.getNickname().isEmpty())
+                .map(User::getId)
+                .collect(Collectors.toList());
+        Map<Long, String> anonNameMap = userService.getAnonymousNameMap(anonymousIds);
 
         return letters.stream().map(l -> {
             LetterVO vo = toVO(l);
             User sender = userMap.get(l.getSenderId());
-            vo.setSenderNickname(sender != null ? resolveLetterDisplayName(sender) : "匿名旅人");
+            vo.setSenderNickname(sender != null ? resolveLetterDisplayName(sender, anonNameMap) : "匿名旅人");
             vo.setIsFromBot(l.getSenderId() != null && botIds.contains(l.getSenderId()));
             User receiver = userMap.get(l.getReceiverId());
-            vo.setReceiverNickname(receiver != null ? resolveLetterDisplayName(receiver) : "匿名旅人");
+            vo.setReceiverNickname(receiver != null ? resolveLetterDisplayName(receiver, anonNameMap) : "匿名旅人");
             return vo;
         }).collect(Collectors.toList());
     }
 
     /**
-     * 信件显示名称：优先使用用户自定义昵称，未设置则 fallback 到匿名名称
+     * 信件显示名称（单条详情）：优先昵称；未设置昵称时，
+     * 普通用户走统一匿名昵称（24小时轮换），bot 保留自身配置名称。
      */
     private String resolveLetterDisplayName(User user) {
         if (user.getNickname() != null && !user.getNickname().isEmpty()) {
             return user.getNickname();
         }
-        return user.getAnonymousName() != null ? user.getAnonymousName() : "匿名旅人";
+        boolean isBot = "bot_echo".equals(user.getUsername()) || "bot".equals(user.getRole());
+        if (isBot) {
+            return user.getAnonymousName() != null ? user.getAnonymousName() : "回音";
+        }
+        return userService.getOrCreateAnonymousName(user.getId());
+    }
+
+    /**
+     * 信件显示名称（批量列表）：优先使用用户自定义昵称；未设置昵称时，
+     * 普通用户走统一匿名昵称（24小时轮换），bot 保留自身配置名称。
+     */
+    private String resolveLetterDisplayName(User user, Map<Long, String> anonNameMap) {
+        if (user.getNickname() != null && !user.getNickname().isEmpty()) {
+            return user.getNickname();
+        }
+        return anonNameMap.getOrDefault(user.getId(),
+                user.getAnonymousName() != null ? user.getAnonymousName() : "匿名旅人");
     }
 }

@@ -531,13 +531,18 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .collect(Collectors.toList());
         if (userIds.isEmpty()) return;
         List<User> users = userMapper.selectBatchIds(userIds);
-        Map<Long, String> nameMap = users.stream()
-                .collect(Collectors.toMap(User::getId, User::getAnonymousName, (a, b) -> a));
         // bot 身份集合：username == bot_echo 或 role == bot
         Set<Long> botIds = users.stream()
                 .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
                 .map(User::getId)
                 .collect(Collectors.toSet());
+        // 普通用户走统一匿名昵称（user.anonymous_name，24小时自动轮换）
+        List<Long> humanIds = userIds.stream().filter(id -> !botIds.contains(id)).collect(Collectors.toList());
+        Map<Long, String> nameMap = new HashMap<>(userService.getAnonymousNameMap(humanIds));
+        // bot 保留自身配置的名称，不参与轮换
+        users.stream().filter(u -> botIds.contains(u.getId()))
+                .forEach(u -> nameMap.put(u.getId(),
+                        u.getAnonymousName() != null ? u.getAnonymousName() : "回音"));
         bottles.forEach(b -> {
             b.setAnonymousName(nameMap.getOrDefault(b.getUserId(), "匿名旅人"));
             b.setIsFromBot(botIds.contains(b.getUserId()));
@@ -553,12 +558,17 @@ public class DriftBottleServiceImpl implements DriftBottleService {
                 .collect(Collectors.toList());
         if (userIds.isEmpty()) return;
         List<User> users = userMapper.selectBatchIds(userIds);
-        Map<Long, String> nameMap = users.stream()
-                .collect(Collectors.toMap(User::getId, User::getAnonymousName, (a, b) -> a));
         Set<Long> botIds = users.stream()
                 .filter(u -> "bot_echo".equals(u.getUsername()) || "bot".equals(u.getRole()))
                 .map(User::getId)
                 .collect(Collectors.toSet());
+        // 普通用户走统一匿名昵称（24小时自动轮换）
+        List<Long> humanIds = userIds.stream().filter(id -> !botIds.contains(id)).collect(Collectors.toList());
+        Map<Long, String> nameMap = new HashMap<>(userService.getAnonymousNameMap(humanIds));
+        // bot 保留自身配置的名称，不参与轮换
+        users.stream().filter(u -> botIds.contains(u.getId()))
+                .forEach(u -> nameMap.put(u.getId(),
+                        u.getAnonymousName() != null ? u.getAnonymousName() : "回音"));
         replies.forEach(r -> {
             r.setAnonymousName(nameMap.getOrDefault(r.getUserId(), "匿名旅人"));
             r.setIsFromBot(botIds.contains(r.getUserId()));

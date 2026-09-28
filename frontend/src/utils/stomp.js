@@ -1,13 +1,11 @@
 // STOMP 客户端封装（篝火实时聊天）
 // 依赖 @stomp/stompjs，使用原生 WebSocket
-// 连接地址：/ws-campfire?token=xxx（相对路径，走 Vite 代理）
+// 网页版走相对路径 /ws-campfire；原生 App 使用 VITE_WS_BASE_URL 完整地址
 import { Client } from '@stomp/stompjs'
-
-const WS_BASE_URL = '/ws-campfire'
+import { getWsUrl } from '@/utils/baseUrl'
 
 export function buildBrokerUrl(token) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const base = `${protocol}//${window.location.host}/ws-campfire`
+  const base = getWsUrl()
   return token ? `${base}?token=${encodeURIComponent(token)}` : base
 }
 

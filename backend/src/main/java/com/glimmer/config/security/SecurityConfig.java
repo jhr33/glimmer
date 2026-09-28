@@ -72,6 +72,16 @@ public class SecurityConfig {
                 // —— 用户公开信息：他人花园页 / 公开资料页 ——
                 .requestMatchers("GET", "/api/users/{userId}/garden").permitAll()
                 .requestMatchers("GET", "/api/users/{userId}/profile").permitAll()
+                // —— 萤火交流会：广场列表 / 文章详情（游客可浏览公开文章）
+                //    注意 /api/articles/mine 虽与 {id} 模板同段，但会优先精确映射到"我的随记"，
+                //    该方法内部通过 SecurityUtils.getCurrentUserId() 强制登录，游客访问返回业务401 ——
+                .requestMatchers("GET", "/api/articles").permitAll()
+                .requestMatchers("GET", "/api/articles/{id}").permitAll()
+                // —— 文章评论列表游客可见；/folders、/collections 虽也匹配 {id} 模板，
+                //    但对应方法内部强制 getCurrentUserId()，游客访问返回业务401 ——
+                .requestMatchers("GET", "/api/articles/{id}/comments").permitAll()
+                // —— 小游戏：排行榜游客可浏览（提交成绩 / 我的最佳仍是需登录接口） ——
+                .requestMatchers("GET", "/api/game/leaderboard").permitAll()
                 // WebSocket 端点（鉴权由 JwtHandshakeInterceptor 处理，见 §3.4.3）
                 .requestMatchers("/ws-campfire/**").permitAll()
                 // 接口文档

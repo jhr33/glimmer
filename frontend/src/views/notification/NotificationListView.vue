@@ -23,6 +23,7 @@ const typeTabs = [
   { key: '', label: '全部', type: 'primary' },
   { key: 'bottle_thank', label: '感谢', type: 'success' },
   { key: 'bottle_reply', label: '漂流瓶回复', type: 'warning' },
+  { key: 'interaction', label: '文章互动', type: 'danger' },
   { key: 'report_result', label: '举报通知', type: 'danger' },
   { key: 'appeal_result', label: '申诉审核', type: 'warning' },
   { key: 'feedback_reply', label: '反馈回复', type: 'primary' },
@@ -38,7 +39,8 @@ const typeTabs = [
     system: { label: '系统', type: 'info' },
     bottle_reply: { label: '漂流瓶回复', type: 'warning' },
     bottle_thank: { label: '感谢', type: 'success' },
-    appeal_result: { label: '申诉审核', type: 'warning' }
+    appeal_result: { label: '申诉审核', type: 'warning' },
+    interaction: { label: '文章互动', type: 'danger' }
   }
 
   function typeMeta(t) {
@@ -110,7 +112,7 @@ async function handleReadOne(item) {
   handleNotificationClick(item)
 }
 
-// 点击通知项跳转：bottle_reply → 漂流瓶页面并打开详情
+// 点击通知项跳转：bottle_reply → 漂流瓶页面并打开详情；interaction/article → 文章详情
 function handleNotificationClick(item) {
   if (item.type === 'bottle_reply' || item.type === 'bottle_thank') {
     const refId = item.refId ?? item.ref_id
@@ -118,6 +120,17 @@ function handleNotificationClick(item) {
       router.push({ path: '/driftBottle', query: { id: refId } })
     } else {
       router.push('/driftBottle')
+    }
+    return
+  }
+  // 文章互动通知（点赞/收藏/评论/评论点赞）与文章审核通知（打回）统一跳转文章详情
+  const refType = item.refType ?? item.ref_type
+  if (item.type === 'interaction' || refType === 'article') {
+    const refId = item.refId ?? item.ref_id
+    if (refId) {
+      router.push(`/articles/${refId}`)
+    } else {
+      router.push('/articles')
     }
   }
 }

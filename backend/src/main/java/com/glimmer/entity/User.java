@@ -17,6 +17,9 @@ public class User {
 
     private String username;
 
+    /** 手机号（唯一索引，可空；用于手机号登录/注册） */
+    private String phone;
+
     private String password;
 
     /** 最近一次修改密码时间（Asia/Shanghai 时区），用于限制一天只能修改一次 */
@@ -24,7 +27,13 @@ public class User {
 
     private String nickname;
 
+    /** 自定义头像URL（NULL = 系统默认头像，前端按 userId 取默认头像之一） */
+    private String avatarUrl;
+
     private String anonymousName;
+
+    /** 匿名昵称过期时间：超过后下次使用匿名身份时重新生成（24小时轮换） */
+    private LocalDateTime anonymousNameExpiresAt;
 
     private String role;
 

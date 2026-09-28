@@ -21,7 +21,7 @@ import com.glimmer.mapper.CampfireMessageMapper;
 import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.TokenTransactionMapper;
 import com.glimmer.mapper.UserMapper;
-import com.glimmer.common.util.AnonymousNameGenerator;
+import com.glimmer.common.exception.BusinessException;
 import com.glimmer.service.CampfireService;
 import com.glimmer.service.UserService;
 import com.glimmer.service.dto.CampfireMessageVO;
@@ -373,11 +373,21 @@ public class CampfireServiceImpl implements CampfireService {
 
     @Override
     @Transactional(rollbackFor = Exception.class)
-    public CampfireMessageVO sendMessage(Long userId, Long campfireId, String content, Long quotedMessageId) {
+    public CampfireMessageVO sendMessage(Long userId, Long campfireId, String content, Long quotedMessageId,
+                                          String msgType, String imageUrl) {
         // 1. 校验用户非 banned
         userService.checkUserNotMuted(userId);
-        // 2. 违禁词检测
-        bannedWordFilterService.check(content, "campfireMessage");
+        // 2. 图片消息：content 可为空，违禁词检查仅在 text 消息执行
+        if ("image".equals(msgType)) {
+            if (imageUrl == null || imageUrl.isEmpty()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "图片URL不能为空");
+            }
+        } else {
+            if (content == null || content.isEmpty()) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "内容不能为空");
+            }
+            bannedWordFilterService.check(content, "campfireMessage");
+        }
         // 3. 校验用户是该篝火成员
         CampfireMember member = checkCampfireMember(userId, campfireId);
         // 4. 获取用户信息
@@ -391,9 +401,8 @@ public class CampfireServiceImpl implements CampfireService {
             identityName = member.getAnonymousName();
         }
         if (identityName == null || identityName.isEmpty()) {
-            identityName = (user.getNickname() != null && !user.getNickname().isEmpty())
-                    ? user.getNickname()
-                    : AnonymousNameGenerator.generateStable(userId, campfireId);
+            // 历史成员无名称快照：优先昵称，无昵称则走统一匿名名（user.anonymous_name，24小时轮换）
+            identityName = userService.resolveDisplayName(user, "nickname");
             campfireMemberMapper.update(null, new LambdaUpdateWrapper<CampfireMember>()
                     .eq(CampfireMember::getId, member.getId())
                     .set(CampfireMember::getAnonymousName, identityName));
@@ -423,7 +432,11 @@ public class CampfireServiceImpl implements CampfireService {
         message.setCampfireId(campfireId);
         message.setUserId(userId);
         message.setAnonymousName(identityName);
+        // 头像跟随身份：昵称身份存自定义头像快照，匿名身份存 NULL（前端显示系统默认头像）
+        message.setAvatarUrl(userService.resolveAvatarForDisplayName(user, identityName));
         message.setContent(content);
+        message.setMsgType(msgType == null ? "text" : msgType);
+        message.setImageUrl(imageUrl);
         message.setQuotedMessageId(quotedMessageId);
         message.setQuotedContent(quotedContent);
         message.setCreatedAt(now);
@@ -476,21 +489,12 @@ public class CampfireServiceImpl implements CampfireService {
     }
 
     /**
-     * 根据 displayMode 解析身份名称
-     * - "nickname"：按 userId 查询用户 nickname
-     * - "anonymous"：同一用户+同一篝火+同一天 = 同一稳定名称
-     * - 默认：按 userId 查询用户 nickname
+     * 根据 displayMode 解析身份名称（篝火/漂流瓶/交流会统一规则）
+     * - "anonymous"：user.anonymous_name（24小时内复用，过期自动轮换）
+     * - "nickname"/默认：用户自己的昵称，昵称为空时 fallback 到统一匿名名
      */
     private String resolveIdentityName(User user, Long campfireId, String displayMode) {
-        if ("anonymous".equals(displayMode)) {
-            return AnonymousNameGenerator.generateStable(user.getId(), campfireId);
-        }
-        // nickname 模式或默认
-        if (user.getNickname() != null && !user.getNickname().isEmpty()) {
-            return user.getNickname();
-        }
-        // 未设置昵称，fallback 到稳定匿名
-        return AnonymousNameGenerator.generateStable(user.getId(), campfireId);
+        return userService.resolveDisplayName(user, displayMode);
     }
 
     /**
@@ -549,7 +553,10 @@ public class CampfireServiceImpl implements CampfireService {
         vo.setCampfireId(message.getCampfireId());
         vo.setUserId(message.getUserId());
         vo.setAnonymousName(message.getAnonymousName());
+        vo.setAvatarUrl(message.getAvatarUrl());
         vo.setContent(message.getContent());
+        vo.setMsgType(message.getMsgType());
+        vo.setImageUrl(message.getImageUrl());
         vo.setCreatedAt(message.getCreatedAt());
         vo.setQuotedMessageId(message.getQuotedMessageId());
         vo.setQuotedContent(message.getQuotedContent());

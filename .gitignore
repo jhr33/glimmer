@@ -10,6 +10,7 @@
 # IDE
 .idea/
 .vscode/
+.trae/
 *.iml
 *.iws
 *.ipr
@@ -42,3 +43,9 @@ mysql_data/
 uploads_data/
 data/
 /backend/application-pord.yml
+# Spring 环境专属配置（含真实密钥，禁止提交；不影响主配置 application.yml）
+backend/application-*.yml
+backend/application-*.properties
+# 本地用户上传文件（用户隐私 + 无版本价值）
+uploads/
+backend/uploads/

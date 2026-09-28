@@ -79,3 +79,55 @@ ol {
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ============================================ */
+/* 移动端全局响应式样式（< 768px）              */
+/* ============================================ */
+@media (max-width: 767px) {
+  html,
+  body {
+    /* 禁止 iOS 橡皮筋滚动效果，模拟原生 App 体验 */
+    overscroll-behavior: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    font-size: 14px;
+  }
+
+  /* Element Plus 弹窗在移动端全宽展示 */
+  .el-dialog {
+    width: 90% !important;
+    margin: 5vh auto !important;
+  }
+  .el-drawer {
+    width: 80% !important;
+  }
+
+  /* Element Plus 表格在移动端允许横向滚动 */
+  .el-table {
+    font-size: 13px;
+  }
+
+  /* 卡片内边距收紧 */
+  .el-card__body {
+    padding: 14px !important;
+  }
+
+  /* 按钮文字大小微调 */
+  .el-button {
+    font-size: 14px;
+  }
+
+  /* 全局容器去除过宽的最大宽度限制（由各页面自行控制） */
+}
+
+/* iOS 安全区适配：内容不被刘海/底部小黑条遮挡 */
+@supports (padding: max(0px)) {
+  body {
+    padding-top: env(safe-area-inset-top);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+}
+

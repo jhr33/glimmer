@@ -82,15 +82,21 @@ public class PunishmentServiceImpl implements PunishmentService {
         log.info("创建处罚单: id={}, userId={}, type={}, sourceType={}, sourceId={}", 
                 punishment.getId(), userId, type, sourceType, sourceId);
 
-        // 创建非WARNING处罚时，同步将用户状态设为banned
-        if (!Punishment.TYPE_WARNING.equals(type)) {
+        // 仅"管理员手动永久封禁"才把 user.status 置为 banned（禁止登录）。
+        // 系统自动封禁（SOURCE_AUTO 的 BAN）与禁言（MUTE）保持 user.status=active：
+        // 用户可以正常登录，仅在 Service 层被禁止发言，并可通过申诉流程解除。
+        boolean adminBan = Punishment.TYPE_BAN.equals(type)
+                && Punishment.SOURCE_ADMIN.equals(sourceType);
+        if (adminBan) {
             User user = userMapper.selectById(userId);
             if (user != null && !"banned".equals(user.getStatus())) {
                 user.setStatus("banned");
                 userMapper.updateById(user);
-                log.info("创建处罚同步用户状态为banned: userId={}, punishmentType={}", userId, type);
+                log.info("管理员封禁，同步用户状态为banned: userId={}", userId);
             }
-            // 主动失效封禁状态缓存
+        }
+        // 任意非 WARNING 处罚都影响发言，主动失效封禁状态缓存
+        if (!Punishment.TYPE_WARNING.equals(type)) {
             evictBannedCache(userId);
         }
 

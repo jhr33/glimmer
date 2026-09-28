@@ -10,6 +10,11 @@ export function updateNickname(data) {
   return request({ url: '/user/nickname', method: 'put', data })
 }
 
+// 更新头像（avatarUrl 传空字符串/null 表示恢复系统默认头像）
+export function updateAvatar(data) {
+  return request({ url: '/user/avatar', method: 'put', data })
+}
+
 // 修改密码（一天限一次）
 export function changePassword(data) {
   return request({ url: '/user/password', method: 'put', data })

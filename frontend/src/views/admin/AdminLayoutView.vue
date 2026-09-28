@@ -5,7 +5,8 @@ import {
   Warning,
   ChatDotRound,
   Bell,
-  User
+  User,
+  Reading
 } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -13,6 +14,7 @@ const route = useRoute()
 
 const menus = [
   { index: '/admin/reports', label: '举报管理', icon: Warning },
+  { index: '/admin/articles', label: '文章审核', icon: Reading },
   { index: '/admin/feedbacks', label: '意见信与申诉', icon: ChatDotRound },
   { index: '/admin/announcements', label: '公告管理', icon: Bell },
   { index: '/admin/users', label: '用户管理', icon: User }

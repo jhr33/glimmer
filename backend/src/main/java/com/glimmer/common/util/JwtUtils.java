@@ -7,10 +7,11 @@ import io.jsonwebtoken.security.Keys;
 import javax.crypto.SecretKey;
 import java.nio.charset.StandardCharsets;
 import java.util.Date;
+import java.util.UUID;
 
 /**
  * JWT 工具类（HS256，见开发文档 §4.3）
- * 密钥通过环境变量 JWT_SECRET 配置，过期时间 24 小时
+ * 密钥通过环境变量 JWT_SECRET 配置，过期时间默认 30 天
  */
 public class JwtUtils {
 
@@ -47,12 +48,14 @@ public class JwtUtils {
      * @param userId   用户ID
      * @param username 用户名
      * @param role     角色
+     * @param jti      会话唯一ID（每次登录生成，配合 Redis 实现"新登录踢掉旧会话"）
      */
-    public String generateToken(Long userId, String username, String role) {
+    public String generateToken(Long userId, String username, String role, String jti) {
         Date now = new Date();
         Date expiry = new Date(now.getTime() + expirationMillis);
         return Jwts.builder()
                 .subject(String.valueOf(userId))
+                .id(jti)
                 .claim("userId", userId)
                 .claim("username", username)
                 .claim("role", role)
@@ -60,6 +63,28 @@ public class JwtUtils {
                 .expiration(expiry)
                 .signWith(key)
                 .compact();
+    }
+
+    /**
+     * 生成随机会话ID（jti）
+     */
+    public static String generateJti() {
+        return UUID.randomUUID().toString().replace("-", "");
+    }
+
+    /**
+     * 读取 token 中的会话ID（jti）
+     */
+    public String getJti(String token) {
+        Claims claims = parseToken(token);
+        return claims == null ? null : claims.getId();
+    }
+
+    /**
+     * token 有效期（毫秒），会话缓存 TTL 与之保持一致
+     */
+    public long getExpirationMillis() {
+        return expirationMillis;
     }
 
     /**

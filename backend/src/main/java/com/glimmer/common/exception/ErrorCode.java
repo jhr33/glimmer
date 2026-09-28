@@ -44,17 +44,34 @@ public enum ErrorCode {
     ALREADY_WATERED_TODAY(4014, "今日已浇水"),
 
     // 举报/花种相关 4015-4018
-    USER_BANNED(4015, "用户已被封禁"),
+    USER_BANNED(4015, "账号已被封禁，暂无法登录或操作；如有异议请联系管理员申诉：1623919525@qq.com"),
     CANNOT_REPORT_SELF(4016, "不能举报自己"),
     ALREADY_REPORTED(4017, "已举报过该目标"),
     FLOWER_TYPE_UNAVAILABLE(4018, "花种未上架"),
-    USER_MUTED(4019, "用户已被禁言"),
+    // 禁言：用户仍可正常登录，仅限制发言；不暴露联系邮箱，引导其走应用内「意见反馈与申诉」
+    USER_MUTED(4019, "账号已被禁言，暂不能发言；如有异议可前往「意见反馈与申诉」提交申诉"),
 
     // AI 对话额度相关 4020
     AI_QUOTA_EXHAUSTED(4020, "本轮对话额度已用完"),
 
     // 内容安全相关 4021
-    CONTENT_BANNED(4021, "内容包含违规词汇");
+    CONTENT_BANNED(4021, "内容包含违规词汇"),
+
+    // 会话相关 4024
+    SESSION_REPLACED(4024, "您的账号已在其他地方登录，您已被迫下线"),
+
+    // 短信验证码相关 4025-4028
+    SMS_CODE_INVALID(4025, "验证码错误或已过期"),
+    PHONE_ALREADY_BOUND(4026, "该手机号已被绑定"),
+    SMS_SEND_TOO_FREQUENT(4027, "发送太频繁，请稍后再试"),
+    SMS_DAILY_LIMIT(4028, "今日短信发送次数已达上限"),
+    SMS_SEND_FAILED(4029, "短信发送失败，请稍后再试"),
+    PHONE_NOT_REGISTERED(4030, "该手机号未注册"),
+    SMS_CAPTCHA_INVALID(4033, "图片验证码错误或已过期"),
+
+    // OSS 相关 4031-4032
+    OSS_NOT_CONFIGURED(4031, "图片上传服务未配置"),
+    OSS_SIGNATURE_FAILED(4032, "图片上传签名生成失败");
 
     private final int code;
     private final String message;

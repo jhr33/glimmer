@@ -5,6 +5,7 @@ import com.glimmer.common.util.SecurityUtils;
 import com.glimmer.service.UserService;
 import com.glimmer.service.dto.ChangePasswordRequest;
 import com.glimmer.service.dto.GardenVO;
+import com.glimmer.service.dto.UpdateAvatarRequest;
 import com.glimmer.service.dto.UpdateNicknameRequest;
 import com.glimmer.service.dto.UserProfileVO;
 import com.glimmer.service.dto.UserVO;
@@ -46,6 +47,14 @@ public class UserController {
     public Result<Void> updateNickname(@Valid @RequestBody UpdateNicknameRequest request) {
         Long userId = SecurityUtils.getCurrentUserId();
         userService.updateNickname(userId, request);
+        return Result.success();
+    }
+
+    @Operation(summary = "更新头像（传空URL恢复系统默认头像）")
+    @PutMapping("/avatar")
+    public Result<Void> updateAvatar(@RequestBody UpdateAvatarRequest request) {
+        Long userId = SecurityUtils.getCurrentUserId();
+        userService.updateAvatar(userId, request == null ? null : request.getAvatarUrl());
         return Result.success();
     }
 

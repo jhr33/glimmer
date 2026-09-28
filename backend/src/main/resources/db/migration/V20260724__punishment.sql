@@ -63,30 +63,41 @@ DEALLOCATE PREPARE stmt;
 -- ==============================================
 
 -- 注意：执行此迁移前请确保 punishment 表已创建
+-- 幂等说明：仅当 user.mute_type 列仍存在时才执行迁移。
+--   列已被本脚本第五部分删除 ⇔ 数据已迁移过，直接跳过；
+--   同时也避免重复执行导致 punishment 表插入重复记录。
+--   因 INSERT...SELECT 引号较多，整体包进 PREPARE 动态SQL，字符串字面量单引号双写转义。
 
-INSERT INTO punishment (user_id, type, reason, source_type, source_id, start_at, end_at, status, created_at, updated_at)
-SELECT 
-    id AS user_id,
-    CASE 
-        WHEN mute_type = 'warning' THEN 'WARNING'
-        WHEN mute_type = 'mute_24h' THEN 'MUTE_24H'
-        WHEN mute_type = 'mute_7d' THEN 'MUTE_7D'
-        WHEN mute_type = 'ban' THEN 'BAN'
-        ELSE 'WARNING'
-    END AS type,
-    '数据迁移：从旧版user表迁移的处罚记录' AS reason,
-    'AUTO' AS source_type,
-    NULL AS source_id,
-    CASE 
-        WHEN mute_end_time IS NOT NULL THEN DATE_SUB(mute_end_time, INTERVAL 24 HOUR) 
-        ELSE created_at 
-    END AS start_at,
-    mute_end_time AS end_at,
-    'ACTIVE' AS status,
-    created_at AS created_at,
-    updated_at AS updated_at
-FROM user 
-WHERE mute_type IS NOT NULL;
+SET @col_exists = (SELECT COUNT(*) FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'user' AND COLUMN_NAME = 'mute_type');
+SET @sql = IF(@col_exists > 0,
+'INSERT INTO punishment (user_id, type, reason, source_type, source_id, start_at, end_at, status, created_at, updated_at)
+SELECT
+    id,
+    CASE
+        WHEN mute_type = ''warning'' THEN ''WARNING''
+        WHEN mute_type = ''mute_24h'' THEN ''MUTE_24H''
+        WHEN mute_type = ''mute_7d'' THEN ''MUTE_7D''
+        WHEN mute_type = ''ban'' THEN ''BAN''
+        ELSE ''WARNING''
+    END,
+    ''数据迁移：从旧版user表迁移的处罚记录'',
+    ''AUTO'',
+    NULL,
+    CASE
+        WHEN mute_end_time IS NOT NULL THEN DATE_SUB(mute_end_time, INTERVAL 24 HOUR)
+        ELSE created_at
+    END,
+    mute_end_time,
+    ''ACTIVE'',
+    created_at,
+    updated_at
+FROM user
+WHERE mute_type IS NOT NULL',
+'SELECT ''user.mute_type 列不存在（数据已迁移过），跳过'' AS msg');
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 
 -- ==============================================
 -- 五、修改 user 表（迁移完成后执行）

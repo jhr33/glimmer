@@ -1,11 +1,13 @@
 package com.glimmer.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.metadata.IPage;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
+import com.glimmer.common.util.AnonymousNameGenerator;
 import com.glimmer.entity.Flower;
 import com.glimmer.entity.FlowerType;
 import com.glimmer.entity.Punishment;
@@ -33,7 +35,9 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -79,6 +83,35 @@ public class UserServiceImpl implements UserService {
         if (!success) {
             throw new BusinessException(ErrorCode.CONFLICT, "昵称更新冲突，请重试");
         }
+    }
+
+    /** 头像URL最大长度（与 user.avatar_url 字段宽度一致） */
+    private static final int AVATAR_URL_MAX_LENGTH = 500;
+
+    @Override
+    public void updateAvatar(Long userId, String avatarUrl) {
+        getUserOrThrow(userId);
+        String target;
+        if (!StringUtils.hasText(avatarUrl)) {
+            // 空值表示恢复系统默认头像
+            target = null;
+        } else {
+            target = avatarUrl.trim();
+            if (target.length() > AVATAR_URL_MAX_LENGTH) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "头像URL过长");
+            }
+            if (!target.startsWith("https://") && !target.startsWith("http://")) {
+                throw new BusinessException(ErrorCode.PARAM_ERROR, "头像URL格式不正确");
+            }
+        }
+        // updateById 默认忽略 null 字段，恢复默认头像需用 UpdateWrapper 显式置 NULL
+        int updated = userMapper.update(null, new LambdaUpdateWrapper<User>()
+                .eq(User::getId, userId)
+                .set(User::getAvatarUrl, target));
+        if (updated <= 0) {
+            throw new BusinessException(ErrorCode.CONFLICT, "头像更新冲突，请重试");
+        }
+        log.info("用户头像更新成功: userId={}, custom={}", userId, target != null);
     }
 
     /**
@@ -177,12 +210,18 @@ public class UserServiceImpl implements UserService {
     @Override
     public void checkUserNotMuted(Long userId) {
         User user = getUserOrThrow(userId);
-        if ("banned".equals(user.getStatus())) {
-            // 检查是否还有生效的处罚（WARNING除外）
-            if (punishmentService.isUserBanned(userId)) {
+        // 发言限制以 punishment 表中"生效中的非警告处罚"为准：
+        // 系统自动 BAN 的用户 user.status 仍为 active，但一样不能发言；
+        // 被 MUTE 禁言的用户返回禁言提示，BAN 用户返回封禁提示（均附申诉邮箱）。
+        if (punishmentService.isUserBanned(userId)) {
+            Punishment latest = punishmentService.getLatestActiveByUserId(userId);
+            if (latest != null && Punishment.TYPE_BAN.equals(latest.getType())) {
                 throw new BusinessException(ErrorCode.USER_BANNED);
             }
-            // 处罚已全部结束，自动恢复为active
+            throw new BusinessException(ErrorCode.USER_MUTED);
+        }
+        // 兜底：status 残留 banned 但已无生效处罚（解禁后历史状态），自动恢复为 active
+        if ("banned".equals(user.getStatus())) {
             user.setStatus("active");
             userMapper.updateById(user);
             log.info("用户处罚已结束，自动恢复为active: userId={}", userId);
@@ -196,6 +235,84 @@ public class UserServiceImpl implements UserService {
             return null;
         }
         return user.getAiContext();
+    }
+
+    /** 匿名昵称有效期：24 小时（篝火/漂流瓶/交流会全模块共用同一个名称） */
+    private static final long ANONYMOUS_NAME_TTL_HOURS = 24L;
+
+    @Override
+    public String getOrCreateAnonymousName(Long userId) {
+        User user = getUserOrThrow(userId);
+        LocalDateTime now = LocalDateTime.now();
+        // 名称存在且未过期：直接复用，保证用户 24 小时内在所有匿名场景身份一致
+        if (StringUtils.hasText(user.getAnonymousName())
+                && user.getAnonymousNameExpiresAt() != null
+                && user.getAnonymousNameExpiresAt().isAfter(now)) {
+            return user.getAnonymousName();
+        }
+        // 不存在或已过期：重新随机生成并续期 24 小时
+        String newName = AnonymousNameGenerator.generateRandom();
+        User update = new User();
+        update.setId(userId);
+        update.setAnonymousName(newName);
+        update.setAnonymousNameExpiresAt(now.plusHours(ANONYMOUS_NAME_TTL_HOURS));
+        userMapper.updateById(update);
+        log.info("刷新用户匿名昵称: userId={}, anonymousName={}", userId, newName);
+        return newName;
+    }
+
+    @Override
+    public String resolveDisplayName(User user, String displayMode) {
+        // 用户显式选择昵称且昵称非空时展示真实昵称；匿名模式（或昵称为空）走统一匿名昵称
+        if (user == null) {
+            return "匿名旅人";
+        }
+        if (!"anonymous".equalsIgnoreCase(displayMode) && StringUtils.hasText(user.getNickname())) {
+            return user.getNickname();
+        }
+        return getOrCreateAnonymousName(user.getId());
+    }
+
+    @Override
+    public String resolveAvatarForDisplayName(User user, String displayName) {
+        // 展示名等于昵称 → 昵称身份，返回自定义头像（无自定义则前端按 userId 显示系统默认头像）；
+        // 匿名身份（展示名不等于昵称）→ 固定返回 null，前端显示系统默认头像
+        if (user == null || !StringUtils.hasText(user.getNickname())
+                || !user.getNickname().equals(displayName)) {
+            return null;
+        }
+        return StringUtils.hasText(user.getAvatarUrl()) ? user.getAvatarUrl() : null;
+    }
+
+    @Override
+    public Map<Long, String> getAnonymousNameMap(Collection<Long> userIds) {
+        if (userIds == null || userIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        // 去重后一次性查询，避免列表场景 N+1
+        List<Long> distinctIds = userIds.stream().distinct().collect(Collectors.toList());
+        List<User> users = userMapper.selectBatchIds(distinctIds);
+        LocalDateTime now = LocalDateTime.now();
+        Map<Long, String> result = new HashMap<>(users.size() * 2);
+        for (User user : users) {
+            String name;
+            if (StringUtils.hasText(user.getAnonymousName())
+                    && user.getAnonymousNameExpiresAt() != null
+                    && user.getAnonymousNameExpiresAt().isAfter(now)) {
+                name = user.getAnonymousName();
+            } else {
+                // 过期/缺失：刷新并续期
+                name = AnonymousNameGenerator.generateRandom();
+                User update = new User();
+                update.setId(user.getId());
+                update.setAnonymousName(name);
+                update.setAnonymousNameExpiresAt(now.plusHours(ANONYMOUS_NAME_TTL_HOURS));
+                userMapper.updateById(update);
+                log.info("批量刷新用户匿名昵称: userId={}, anonymousName={}", user.getId(), name);
+            }
+            result.put(user.getId(), name);
+        }
+        return result;
     }
 
     @Override
@@ -269,7 +386,7 @@ public class UserServiceImpl implements UserService {
         if ("banned".equals(status)) {
             notificationService.sendNotification(
                     userId, "system", "账号已被管理员封禁",
-                    "您的账号已被管理员封禁，如有疑问请联系管理员申诉。",
+                    "您的账号已被管理员封禁，无法登录；如有异议请联系管理员申诉：1623919525@qq.com",
                     null, null);
         } else {
             notificationService.sendNotification(
@@ -300,8 +417,14 @@ public class UserServiceImpl implements UserService {
     private UserVO toUserVO(User user) {
         UserVO vo = new UserVO();
         vo.setId(user.getId());
+        // UID = 10000 + id，对外账号，替代 username 展示
+        vo.setUid(10000L + user.getId());
         vo.setUsername(user.getUsername());
+        // 手机号必须脱敏回填，否则前端永远拿不到 phone，MyView 会误判为"未绑定"
+        vo.setPhone(maskPhone(user.getPhone()));
         vo.setNickname(user.getNickname());
+        // 头像URL必须回填，否则前端永远拿不到自定义头像，UserAvatar 会一直显示系统默认头像
+        vo.setAvatarUrl(user.getAvatarUrl());
         vo.setAnonymousName(user.getAnonymousName());
         vo.setRole(user.getRole());
         vo.setStatus(user.getStatus());
@@ -330,5 +453,16 @@ public class UserServiceImpl implements UserService {
             case Punishment.TYPE_BAN: return "ban";
             default: return punishmentType != null ? punishmentType.toLowerCase() : null;
         }
+    }
+
+    /**
+     * 手机号脱敏：138****5678
+     * 与 AuthServiceImpl.maskPhone 同逻辑，避免跨类依赖，单独维护一份
+     */
+    private String maskPhone(String phone) {
+        if (phone == null || phone.length() != 11) {
+            return phone;
+        }
+        return phone.substring(0, 3) + "****" + phone.substring(7);
     }
 }

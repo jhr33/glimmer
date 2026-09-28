@@ -1,42 +1,44 @@
 package com.glimmer.config.security;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.glimmer.common.response.Result;
 import com.glimmer.common.util.JwtUtils;
-import com.glimmer.service.PunishmentService;
 import io.jsonwebtoken.Claims;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
-import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
-import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.util.Collections;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 
 /**
- * JWT 鉴权过滤器
- * 从 Authorization: Bearer {token} 中解析用户ID和角色，写入 SecurityContext
- * 同时检查用户是否被封禁（isUserBanned 有 Redis 缓存，5 分钟 TTL，性能影响可忽略）
+ * JWT 认证过滤器
+ *
+ * 职责（只做认证，不做处罚拦截——系统封禁用户允许登录浏览/申诉，发言由 Service 层拦截）：
+ * 1. 解析 Authorization: Bearer <token>
+ * 2. 校验 JWT 签名/有效期
+ * 3. 校验会话 jti 是否为 Redis 中的当前会话（单点登录：被新登录顶替的旧 token 直接拒绝，返回 4024）
+ * 4. 通过后把 userId/role 注入 SecurityContext，供 Controller 通过 SecurityUtils 获取
  */
-@Slf4j
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
-    private static final String AUTHORIZATION_HEADER = "Authorization";
-    private static final String BEARER_PREFIX = "Bearer ";
-
     private final JwtUtils jwtUtils;
-    private final PunishmentService punishmentService;
+    private final LoginSessionManager loginSessionManager;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public JwtAuthenticationFilter(JwtUtils jwtUtils, PunishmentService punishmentService) {
+    public JwtAuthenticationFilter(JwtUtils jwtUtils, LoginSessionManager loginSessionManager) {
         this.jwtUtils = jwtUtils;
-        this.punishmentService = punishmentService;
+        this.loginSessionManager = loginSessionManager;
     }
 
     @Override
@@ -44,36 +46,55 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                                     HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         String token = resolveToken(request);
-        if (StringUtils.hasText(token) && jwtUtils.isValid(token)) {
+
+        if (StringUtils.hasText(token)) {
             Claims claims = jwtUtils.parseToken(token);
             if (claims != null) {
-                Long userId = jwtUtils.getUserId(token);
-                String role = jwtUtils.getRole(token);
+                Object userIdObj = claims.get("userId");
+                Long userId = userIdObj instanceof Number ? ((Number) userIdObj).longValue() : null;
+                String role = claims.get("role", String.class);
+                String jti = claims.getId();
+
                 if (userId != null) {
-                    // 仅永久封禁（BAN）才拦截登录，禁言（MUTE）用户可登录但写操作被 Service 层拦截
-                    if (punishmentService.isUserPermanentlyBanned(userId)) {
-                        log.info("永久封禁用户请求被拦截: userId={}, uri={}", userId, request.getRequestURI());
-                        response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-                        response.setContentType("application/json;charset=UTF-8");
-                        response.getWriter().write("{\"code\":4015,\"message\":\"账号已被永久封禁\"}");
+                    // 单点登录校验：jti 与 Redis 中当前会话不一致 → 已在别处登录，旧会话下线
+                    if (!loginSessionManager.isCurrentSession(userId, jti)) {
+                        writeSessionReplaced(response);
                         return;
                     }
-                    String authority = "ROLE_" + (role == null ? "USER" : role.toUpperCase());
-                    UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
-                            userId, null, Collections.singletonList(new SimpleGrantedAuthority(authority)));
-                    authentication.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                    // 角色统一加 ROLE_ 前缀并转大写，适配 Spring Security 的 hasRole()
+                    // （DB 中角色存储为小写 'admin'，hasRole("ADMIN") 需要 ROLE_ADMIN）
+                    List<SimpleGrantedAuthority> authorities =
+                            List.of(new SimpleGrantedAuthority("ROLE_" + (role != null ? role.toUpperCase() : "USER")));
+                    UsernamePasswordAuthenticationToken authentication =
+                            new UsernamePasswordAuthenticationToken(userId, null, authorities);
                     SecurityContextHolder.getContext().setAuthentication(authentication);
                 }
             }
         }
+
         filterChain.doFilter(request, response);
     }
 
+    /**
+     * 从请求头提取 token：Authorization: Bearer xxx
+     */
     private String resolveToken(HttpServletRequest request) {
-        String bearerToken = request.getHeader(AUTHORIZATION_HEADER);
-        if (StringUtils.hasText(bearerToken) && bearerToken.startsWith(BEARER_PREFIX)) {
-            return bearerToken.substring(BEARER_PREFIX.length());
+        String bearer = request.getHeader("Authorization");
+        if (StringUtils.hasText(bearer) && bearer.startsWith("Bearer ")) {
+            return bearer.substring(7);
         }
         return null;
+    }
+
+    /**
+     * 会话被顶替：HTTP 200 + 业务码 4024（与项目统一的业务错误响应风格一致），
+     * 前端据此弹出"已在其他地方登录"提示并跳回登录页。
+     */
+    private void writeSessionReplaced(HttpServletResponse response) throws IOException {
+        response.setStatus(HttpServletResponse.SC_OK);
+        response.setContentType(MediaType.APPLICATION_JSON_VALUE);
+        response.setCharacterEncoding(StandardCharsets.UTF_8.name());
+        response.getWriter().write(objectMapper.writeValueAsString(
+                Result.error(4024, "您的账号已在其他地方登录，您已被迫下线")));
     }
 }

@@ -45,7 +45,9 @@ const targetTypeMap = {
   drift_bottle: '漂流瓶',
   bottle_reply: '瓶子回复',
   letter: '信件',
-  campfire_message: '篝火消息'
+  campfire_message: '篝火消息',
+  article: '交流会文章',
+  article_comment: '交流会评论'
 }
 
 function targetTypeLabel(t) {

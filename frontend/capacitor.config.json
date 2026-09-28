@@ -1,0 +1,11 @@
+{
+  "appId": "com.glimmer.app",
+  "appName": "glimmer 萤光",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  },
+  "android": {
+    "backgroundColor": "#fffaf0"
+  }
+}

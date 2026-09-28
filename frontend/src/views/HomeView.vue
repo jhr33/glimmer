@@ -3,9 +3,11 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 import { ElMessage } from 'element-plus'
-import { Edit, Lock } from '@element-plus/icons-vue'
+import { Edit, Lock, Iphone } from '@element-plus/icons-vue'
 import { signIn, getSignInStatus, getSignInCalendar } from '@/api/token'
 import { changePassword } from '@/api/user'
+import AvatarUploader from '@/components/AvatarUploader.vue'
+import BindPhoneDialog from '@/components/BindPhoneDialog.vue'
 const router = useRouter()
 const userStore = useUserStore()
 
@@ -123,6 +125,8 @@ const nicknameSubmitting = ref(false)
 const passwordDialogVisible = ref(false)
 const passwordForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
 const passwordSubmitting = ref(false)
+// 绑定/换绑手机号弹窗
+const bindPhoneVisible = ref(false)
 
 // 萤火花园亮度等级映射（开发文档 2.7.2 节）
 function getBrightnessLevel(totalFirefly) {
@@ -166,6 +170,7 @@ const navItems = [
   { name: 'campfire', label: '篝火', icon: '🔥', desc: '围炉夜话' },
   { name: 'ai', label: '树洞', icon: '✨', desc: '今夜星光灿烂' },
   { name: 'garden', label: '花园', icon: '🌷', desc: '种下你的花' },
+  { name: 'gameCenter', label: '小游戏', icon: '🐍', desc: '贪吃蛇冲榜' },
   { name: 'notifications', label: '通知中心', icon: '🔔', desc: '查看消息' }
 ]
 
@@ -285,26 +290,33 @@ onMounted(() => {
     <!-- 用户信息卡片 -->
     <el-card class="user-card" shadow="hover">
       <div class="user-info">
-        <el-avatar :size="64" class="user-avatar">
-          {{ user.username?.charAt(0)?.toUpperCase() || 'U' }}
-        </el-avatar>
+        <AvatarUploader :url="user.avatarUrl" :user-id="user.id" :size="64" class="user-avatar" />
         <div class="user-meta">
           <h2 class="user-nickname" @click="openNicknameDialog" title="点击修改昵称">
-            {{ user.nickname || user.username || '旅人' }}
+            {{ user.nickname || '旅人' }}
             <el-icon class="edit-icon"><Edit /></el-icon>
           </h2>
           <div class="user-tags">
-            <el-tag size="small" type="info">用户名：{{ user.username || '-' }}</el-tag>
+            <el-tag size="small" type="info">UID：{{ user.uid ?? user.id + 10000 }}</el-tag>
             <el-tag size="small" type="warning">匿名：{{ user.anonymousName || '-' }}</el-tag>
             <el-tag v-if="user.role === 'admin'" size="small" type="danger">管理员</el-tag>
-            <el-button
-              size="small"
-              type="primary"
-              plain
-              :icon="Lock"
-              @click="openPasswordDialog"
-              class="change-password-btn"
-            >修改密码</el-button>
+            <!-- 修改密码与换绑手机号：垂直堆叠在右上角，修改密码在上 -->
+            <div class="account-action-group">
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :icon="Lock"
+                @click="openPasswordDialog"
+              >修改密码</el-button>
+              <el-button
+                size="small"
+                type="primary"
+                plain
+                :icon="Iphone"
+                @click="bindPhoneVisible = true"
+              >{{ user.phone ? '换绑手机号' : '绑定手机号' }}</el-button>
+            </div>
           </div>
           <div class="user-stats">
             <span>代币：{{ user.tokenBalance ?? 0 }}</span>
@@ -459,6 +471,9 @@ onMounted(() => {
       </template>
     </el-dialog>
 
+    <!-- 绑定/换绑手机号弹窗 -->
+    <BindPhoneDialog v-model:visible="bindPhoneVisible" />
+
     <!-- 萤火花园区域（占位，背景色根据萤火值变化） -->
     <div class="garden-area" :style="gardenStyle">
       <div class="garden-inner">
@@ -550,7 +565,12 @@ onMounted(() => {
   margin-bottom: 8px;
   align-items: center;
 }
-.change-password-btn {
+/* 修改密码 + 换绑手机号：垂直堆叠在 user-tags 右侧靠右 */
+.account-action-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
   margin-left: auto;
 }
 .user-stats {

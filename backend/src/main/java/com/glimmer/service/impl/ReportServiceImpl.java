@@ -7,17 +7,23 @@ import com.glimmer.common.exception.BusinessException;
 import com.glimmer.common.exception.ErrorCode;
 import com.glimmer.common.response.PageResult;
 import com.glimmer.common.util.RedisUtils;
+import com.glimmer.entity.ArticleComment;
 import com.glimmer.entity.CampfireMessage;
+import com.glimmer.entity.CommentLike;
 import com.glimmer.entity.DriftBottle;
 import com.glimmer.entity.DriftBottleReply;
+import com.glimmer.entity.FireflyArticle;
 import com.glimmer.entity.Letter;
 import com.glimmer.entity.Punishment;
 import com.glimmer.entity.Report;
 import com.glimmer.entity.User;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.glimmer.mapper.ArticleCommentMapper;
 import com.glimmer.mapper.CampfireMessageMapper;
+import com.glimmer.mapper.CommentLikeMapper;
 import com.glimmer.mapper.DriftBottleMapper;
 import com.glimmer.mapper.DriftBottleReplyMapper;
+import com.glimmer.mapper.FireflyArticleMapper;
 import com.glimmer.mapper.LetterMapper;
 import com.glimmer.mapper.ReportMapper;
 import com.glimmer.mapper.UserMapper;
@@ -68,6 +74,9 @@ public class ReportServiceImpl implements ReportService {
     private final DriftBottleReplyMapper driftBottleReplyMapper;
     private final LetterMapper letterMapper;
     private final CampfireMessageMapper campfireMessageMapper;
+    private final FireflyArticleMapper fireflyArticleMapper;
+    private final ArticleCommentMapper articleCommentMapper;
+    private final CommentLikeMapper commentLikeMapper;
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
     private final PunishmentService punishmentService;
@@ -83,6 +92,9 @@ public class ReportServiceImpl implements ReportService {
     public ReportServiceImpl(ReportMapper reportMapper, UserMapper userMapper,
                              DriftBottleMapper driftBottleMapper, DriftBottleReplyMapper driftBottleReplyMapper,
                              LetterMapper letterMapper, CampfireMessageMapper campfireMessageMapper,
+                             FireflyArticleMapper fireflyArticleMapper,
+                             ArticleCommentMapper articleCommentMapper,
+                             CommentLikeMapper commentLikeMapper,
                              NotificationService notificationService, ObjectMapper objectMapper,
                              PunishmentService punishmentService, RedisUtils redis) {
         this.reportMapper = reportMapper;
@@ -91,6 +103,9 @@ public class ReportServiceImpl implements ReportService {
         this.driftBottleReplyMapper = driftBottleReplyMapper;
         this.letterMapper = letterMapper;
         this.campfireMessageMapper = campfireMessageMapper;
+        this.fireflyArticleMapper = fireflyArticleMapper;
+        this.articleCommentMapper = articleCommentMapper;
+        this.commentLikeMapper = commentLikeMapper;
         this.notificationService = notificationService;
         this.objectMapper = objectMapper;
         this.punishmentService = punishmentService;
@@ -100,17 +115,19 @@ public class ReportServiceImpl implements ReportService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void createReport(Long reporterId, String targetType, Long targetId, String content) {
-        // 1. 校验举报人状态（被封禁用户不可举报）
+        // 1. 校验举报人状态（处罚期间不可举报）
         User reporter = userMapper.selectById(reporterId);
         if (reporter == null) {
             throw new BusinessException(ErrorCode.NOT_FOUND, "用户不存在");
         }
+        // 处罚期间（禁言/封禁）禁止使用举报功能。
+        // 注意：系统自动 MUTE 的用户 user.status 仍为 active，
+        // 必须以 punishment 表中的生效处罚为准，不能只看 status 字段。
+        if (punishmentService.isUserBanned(reporterId)) {
+            throw new BusinessException(ErrorCode.USER_MUTED, "你在禁言中，当前不可举报他人");
+        }
+        // 兜底：status 残留 banned 但已无生效处罚（解禁后历史状态），自动恢复为 active
         if ("banned".equals(reporter.getStatus())) {
-            boolean hasActivePunishment = punishmentService.isUserBanned(reporterId);
-            if (hasActivePunishment) {
-                throw new BusinessException(ErrorCode.USER_BANNED);
-            }
-            // 处罚已全部结束，自动恢复为active
             reporter.setStatus("active");
             userMapper.updateById(reporter);
             log.info("用户举报时发现处罚已结束，自动恢复为active: userId={}", reporterId);
@@ -160,6 +177,11 @@ public class ReportServiceImpl implements ReportService {
             hideTargetContent(targetType, targetId);
             log.info("内容因短时间内被多次举报自动隐藏: targetType={}, targetId={}, reportCount={}",
                     targetType, targetId, duplicateReportCount);
+        }
+
+        // 6.5 文章审核流：文章被举报即进入待审状态，对广场隐藏，等待管理员审核
+        if ("article".equals(targetType)) {
+            moveArticleToPendingReview(targetId);
         }
 
         // 7. 查询短时间内（1小时）该用户被举报的不同信息数量
@@ -311,9 +333,89 @@ public class ReportServiceImpl implements ReportService {
                     // 信件不单独隐藏
                     break;
                 }
+                case "article": {
+                    // 文章多次被举报进入待审（首次举报时已处理，此处幂等兜底）
+                    moveArticleToPendingReview(targetId);
+                    break;
+                }
+                case "article_comment":
+                    // 评论不单独隐藏：等待管理员审核，举报成立时统一删除
+                    break;
             }
         } catch (Exception e) {
             log.error("隐藏内容失败: targetType={}, targetId={}", targetType, targetId, e);
+        }
+    }
+
+    /**
+     * 文章进入待审核状态（被举报时触发）：
+     * 仅当文章当前处于"审核通过"状态时改为待审，已打回的文章保持打回态不变。
+     */
+    private void moveArticleToPendingReview(Long articleId) {
+        try {
+            FireflyArticle article = fireflyArticleMapper.selectById(articleId);
+            if (article == null) {
+                return;
+            }
+            if (FireflyArticle.REVIEW_APPROVED.equals(article.getReviewStatus())) {
+                article.setReviewStatus(FireflyArticle.REVIEW_PENDING);
+                article.setReviewReason(null);
+                fireflyArticleMapper.updateById(article);
+                log.info("文章被举报进入待审核状态: articleId={}", articleId);
+            }
+        } catch (Exception e) {
+            log.error("文章进入待审失败: articleId={}", articleId, e);
+        }
+    }
+
+    /**
+     * 文章举报审核成立：屏蔽打回（广场不可见，作者可见），通知作者修改后重新提审
+     */
+    private void handleArticleReportApproved(Long articleId, String reviewComment) {
+        try {
+            FireflyArticle article = fireflyArticleMapper.selectById(articleId);
+            if (article == null) {
+                return;
+            }
+            String reason = StringUtils.hasText(reviewComment) ? reviewComment.trim() : "举报成立，内容不合适";
+            article.setReviewStatus(FireflyArticle.REVIEW_RETURNED);
+            article.setReviewReason(reason);
+            fireflyArticleMapper.updateById(article);
+            notificationService.sendNotification(article.getUserId(), "system",
+                    "文章被屏蔽打回",
+                    String.format("你的文章《%s》因被举报且审核成立被屏蔽打回。原因：%s。请修改后重新提交，审核通过后才会重新展示。",
+                            article.getTitle(), reason),
+                    "article", articleId);
+            log.info("举报成立，文章屏蔽打回: articleId={}, reason={}", articleId, reason);
+        } catch (Exception e) {
+            log.error("举报成立处理文章失败: articleId={}", articleId, e);
+        }
+    }
+
+    /**
+     * 评论举报审核成立：删除违规评论（幂等），扣减文章评论计数并清理点赞明细，通知评论作者
+     */
+    private void handleArticleCommentReportApproved(Long commentId, String reviewComment) {
+        try {
+            ArticleComment comment = articleCommentMapper.selectById(commentId);
+            if (comment == null || ArticleComment.STATUS_DELETED.equals(comment.getStatus())) {
+                return;
+            }
+            String reason = StringUtils.hasText(reviewComment) ? reviewComment.trim() : "举报成立，内容违规";
+            comment.setStatus(ArticleComment.STATUS_DELETED);
+            articleCommentMapper.updateById(comment);
+            articleCommentMapper.decreaseCommentCount(comment.getArticleId());
+            // 级联清理该评论的点赞明细，避免孤儿数据
+            commentLikeMapper.delete(new LambdaQueryWrapper<CommentLike>()
+                    .eq(CommentLike::getCommentId, commentId));
+            notificationService.sendNotification(comment.getUserId(), "system",
+                    "评论被删除",
+                    String.format("你在交流会发布的评论（%s）因被举报且审核成立已被删除。原因：%s。",
+                            truncateContent(comment.getContent()), reason),
+                    "article", comment.getArticleId());
+            log.info("举报成立，评论已删除: commentId={}, articleId={}, reason={}", commentId, comment.getArticleId(), reason);
+        } catch (Exception e) {
+            log.error("举报成立处理评论失败: commentId={}", commentId, e);
         }
     }
 
@@ -340,8 +442,29 @@ public class ReportServiceImpl implements ReportService {
                 case "bottle_reply":
                 case "campfire_message":
                 case "letter":
-                    // 这三类目前不会被 hideTargetContent 真正隐藏（只在查询层过滤），无需恢复
+                case "article_comment":
+                    // 这几类不会被 hideTargetContent 真正隐藏（评论等审核成立时删除），无需恢复
                     break;
+                case "article": {
+                    // 举报不成立时恢复文章展示：仅当文章处于待审态且无其他待处理举报时恢复，
+                    // 已被管理员打回（RETURNED）的文章不恢复，需作者修改后重新提审
+                    FireflyArticle article = fireflyArticleMapper.selectById(targetId);
+                    if (article == null
+                            || !FireflyArticle.REVIEW_PENDING.equals(article.getReviewStatus())) {
+                        break;
+                    }
+                    Long pendingReportCount = reportMapper.selectCount(new LambdaQueryWrapper<Report>()
+                            .eq(Report::getTargetType, "article")
+                            .eq(Report::getTargetId, targetId)
+                            .eq(Report::getStatus, "pending"));
+                    if (pendingReportCount == null || pendingReportCount == 0) {
+                        article.setReviewStatus(FireflyArticle.REVIEW_APPROVED);
+                        article.setReviewReason(null);
+                        fireflyArticleMapper.updateById(article);
+                        log.info("举报审核不成立，恢复被隐藏的文章: articleId={}", targetId);
+                    }
+                    break;
+                }
             }
         } catch (Exception e) {
             log.error("恢复内容失败: targetType={}, targetId={}", targetType, targetId, e);
@@ -443,6 +566,14 @@ public class ReportServiceImpl implements ReportService {
         // 审核不成立 → 如果内容是因为"多次举报自动隐藏"的，恢复可见
         if ("rejected".equals(result)) {
             restoreTargetContentIfAutoHidden(report.getTargetType(), report.getTargetId());
+        }
+        // 举报成立且目标为文章 → 屏蔽打回并通知作者
+        if ("approved".equals(result) && "article".equals(report.getTargetType())) {
+            handleArticleReportApproved(report.getTargetId(), reviewComment);
+        }
+        // 举报成立且目标为评论 → 删除违规评论并通知评论作者
+        if ("approved".equals(result) && "article_comment".equals(report.getTargetType())) {
+            handleArticleCommentReportApproved(report.getTargetId(), reviewComment);
         }
 
         if (targetUser != null) {
@@ -568,6 +699,21 @@ public class ReportServiceImpl implements ReportService {
                 }
                 return message.getUserId();
             }
+            case "article": {
+                FireflyArticle article = fireflyArticleMapper.selectById(targetId);
+                if (article == null) {
+                    throw new BusinessException(ErrorCode.NOT_FOUND, "举报目标不存在");
+                }
+                return article.getUserId();
+            }
+            case "article_comment": {
+                ArticleComment comment = articleCommentMapper.selectById(targetId);
+                if (comment == null
+                        || ArticleComment.STATUS_DELETED.equals(comment.getStatus())) {
+                    throw new BusinessException(ErrorCode.NOT_FOUND, "举报目标不存在");
+                }
+                return comment.getUserId();
+            }
             default:
                 throw new BusinessException(ErrorCode.PARAM_ERROR, "目标类型非法");
         }
@@ -583,6 +729,10 @@ public class ReportServiceImpl implements ReportService {
                 return "信件";
             case "campfire_message":
                 return "篝火消息";
+            case "article":
+                return "交流会文章";
+            case "article_comment":
+                return "交流会评论";
             default:
                 return targetType;
         }
@@ -606,6 +756,15 @@ public class ReportServiceImpl implements ReportService {
                 case "campfire_message": {
                     CampfireMessage message = campfireMessageMapper.selectById(targetId);
                     return message != null ? truncateContent(message.getContent()) : "未知内容";
+                }
+                case "article": {
+                    FireflyArticle article = fireflyArticleMapper.selectById(targetId);
+                    return article != null ? truncateContent("《" + article.getTitle() + "》：" + article.getContent())
+                            : "未知内容";
+                }
+                case "article_comment": {
+                    ArticleComment comment = articleCommentMapper.selectById(targetId);
+                    return comment != null ? truncateContent(comment.getContent()) : "未知内容";
                 }
                 default:
                     return "未知内容";
@@ -641,6 +800,15 @@ public class ReportServiceImpl implements ReportService {
                         return "篝火#" + message.getCampfireId();
                     }
                     return "篝火";
+                }
+                case "article":
+                    return "萤火交流会";
+                case "article_comment": {
+                    ArticleComment comment = articleCommentMapper.selectById(targetId);
+                    if (comment != null && comment.getArticleId() != null) {
+                        return "交流会文章#" + comment.getArticleId();
+                    }
+                    return "交流会评论";
                 }
                 default:
                     return targetType;
@@ -842,6 +1010,14 @@ public class ReportServiceImpl implements ReportService {
         // 审核不成立 → 如果内容是因为"多次举报自动隐藏"的，恢复可见
         if ("rejected".equals(result)) {
             restoreTargetContentIfAutoHidden(targetType, targetId);
+        }
+        // 举报成立且目标为文章 → 屏蔽打回并通知作者
+        if ("approved".equals(result) && "article".equals(targetType)) {
+            handleArticleReportApproved(targetId, reviewComment);
+        }
+        // 举报成立且目标为评论 → 删除违规评论并通知评论作者
+        if ("approved".equals(result) && "article_comment".equals(targetType)) {
+            handleArticleCommentReportApproved(targetId, reviewComment);
         }
 
         // 获取所有举报人ID

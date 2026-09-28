@@ -1,0 +1,30 @@
+# ============================================================
+# glimmer 后端 systemd 服务单元
+# 安装位置（服务器）：/etc/systemd/system/glimmer-backend.service
+# 安装方式见同目录 server-setup.sh
+# ============================================================
+
+[Unit]
+Description=Glimmer Backend (Spring Boot)
+# 等网络和数据库/缓存就绪后再启动
+After=network.target mysql.service redis-server.service
+
+[Service]
+Type=simple
+User=ubuntu
+# 工作目录固定在 /home/ubuntu/app：
+# Spring Boot 会自动读取该目录下的 application-prod.yml（含 DB 密码、JWT 密钥等，不入库）
+WorkingDirectory=/home/ubuntu/app
+# 部署脚本每次上传的新 jar 统一命名为 app.jar，与版本号解耦
+# -Xms/-Xmx：服务器只有 2G 内存，与 MySQL/Redis/Nginx 共存，限制堆内存防止 OOM
+ExecStart=/usr/lib/jvm/java-17-openjdk-amd64/bin/java -Xms256m -Xmx512m -jar /home/ubuntu/app/app.jar --spring.profiles.active=prod
+# 异常退出/被杀时 5 秒后自动拉起；正常 stop 不重启
+Restart=on-failure
+RestartSec=5
+SuccessExitStatus=143
+# 日志交给 journald 统一管理（自动轮转），不再产生无限增长的 app.log
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

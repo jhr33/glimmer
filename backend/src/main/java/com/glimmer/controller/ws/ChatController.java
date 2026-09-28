@@ -1,6 +1,9 @@
 package com.glimmer.controller.ws;
 
 import com.glimmer.common.exception.BusinessException;
+import com.glimmer.common.exception.ErrorCode;
+import com.glimmer.config.security.LoginSessionManager;
+import com.glimmer.config.websocket.JwtHandshakeInterceptor;
 import com.glimmer.service.CampfireService;
 import com.glimmer.service.dto.CampfireMessageVO;
 import com.glimmer.service.dto.SendMessageRequest;
@@ -33,9 +36,11 @@ import java.util.Map;
 public class ChatController {
 
     private final CampfireService campfireService;
+    private final LoginSessionManager loginSessionManager;
 
-    public ChatController(CampfireService campfireService) {
+    public ChatController(CampfireService campfireService, LoginSessionManager loginSessionManager) {
         this.campfireService = campfireService;
+        this.loginSessionManager = loginSessionManager;
     }
 
     /**
@@ -50,11 +55,19 @@ public class ChatController {
         Principal principal = headerAccessor.getUser();
         if (principal == null) {
             log.warn("WebSocket 消息无鉴权用户: campfireId={}", campfireId);
-            throw new BusinessException(com.glimmer.common.exception.ErrorCode.UNAUTHORIZED);
+            throw new BusinessException(ErrorCode.UNAUTHORIZED);
         }
         Long userId = Long.valueOf(principal.getName());
+        // 单点登录校验：连接建立后账号在别处重新登录时，旧连接不允许再发消息
+        Map<String, Object> sessionAttributes = headerAccessor.getSessionAttributes();
+        Object jti = sessionAttributes == null ? null : sessionAttributes.get(JwtHandshakeInterceptor.WS_JTI_KEY);
+        if (!loginSessionManager.isCurrentSession(userId, jti == null ? null : jti.toString())) {
+            log.warn("WebSocket 消息被拒绝：会话已在其他地方登录, userId={}", userId);
+            throw new BusinessException(ErrorCode.SESSION_REPLACED);
+        }
         // 调用 service：插入消息 + 广播到 /topic/campfire/{campfireId}
-        CampfireMessageVO vo = campfireService.sendMessage(userId, campfireId, request.getContent(), request.getQuotedMessageId());
+        CampfireMessageVO vo = campfireService.sendMessage(userId, campfireId, request.getContent(),
+                request.getQuotedMessageId(), request.getMsgType(), request.getImageUrl());
         log.debug("WebSocket 篝火消息已处理: campfireId={}, messageId={}", campfireId, vo.getId());
     }
 

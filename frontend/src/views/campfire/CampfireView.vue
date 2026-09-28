@@ -14,7 +14,9 @@ import {
 } from '@/api/campfire'
 import { createStompClient } from '@/utils/stomp'
 import { useUserStore } from '@/stores/user'
+import { getOssSignature, uploadToOss } from '@/api/upload'
 import ReportDialog from '@/components/ReportDialog.vue'
+import UserAvatar from '@/components/UserAvatar.vue'
 
 const userStore = useUserStore()
 const currentUserId = computed(() => userStore.userInfo?.id)
@@ -340,11 +342,29 @@ function connectStomp(campfireId) {
           (message) => {
             try {
               const body = JSON.parse(message.body)
+              console.log('收到篝火消息:', body)
               appendMessage(body)
             } catch (e) {
+              console.error('解析篝火消息失败:', e, message.body)
             }
           }
         )
+        // 订阅个人错误频道：后端 @MessageExceptionHandler 推送 ERROR 帧到这里
+        // 不订阅的话，发送图片消息失败会无声无息，前端误以为"发送成功"
+        client.subscribe(`/user/queue/errors`, (message) => {
+          try {
+            const err = JSON.parse(message.body)
+            console.error('篝火业务异常:', err)
+            // 封禁/禁言等需要刷新用户信息
+            if (err?.code === 4015 || err?.code === 4019) {
+              handleBanned({ code: err.code })
+            } else {
+              ElMessage.error(err?.message || '消息发送失败')
+            }
+          } catch (e) {
+            console.error('解析错误帧失败:', e, message.body)
+          }
+        })
       },
       onDisconnect: () => {
         console.log('WebSocket连接断开')
@@ -489,7 +509,7 @@ function sendMessage() {
   }
   sending.value = true
   try {
-    const payload = { content }
+    const payload = { content, msgType: 'text' }
     if (replyingTo.value?.id) {
       payload.quotedMessageId = replyingTo.value.id
     }
@@ -498,6 +518,68 @@ function sendMessage() {
       body: JSON.stringify(payload)
     })
     inputContent.value = ''
+    replyingTo.value = null
+  } catch (e) {
+    ElMessage.error('发送失败，请重试')
+  } finally {
+    sending.value = false
+  }
+}
+
+// 选择并上传图片
+async function handleSelectImage() {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'image/*'
+  input.onchange = async () => {
+    const file = input.files[0]
+    if (!file) return
+    if (!file.type.startsWith('image/')) {
+      ElMessage.error('只能上传图片文件')
+      return
+    }
+    if (file.size / 1024 / 1024 > 5) {
+      ElMessage.error('图片大小不能超过 5MB')
+      return
+    }
+    try {
+      const res = await getOssSignature('campfire')
+      const url = await uploadToOss(file, res.data)
+      await sendImageMessage(url)
+      ElMessage.success('图片发送成功')
+    } catch (e) {
+      ElMessage.error(e.message || '图片发送失败')
+    }
+  }
+  input.click()
+}
+
+// 发送图片消息
+async function sendImageMessage(imageUrl) {
+  if (!isLoggedIn.value) { ElMessage.warning('请先登录'); return }
+  if (isBanned.value) {
+    ElMessage.error('账号已被封禁，无法发送')
+    return
+  }
+  if (!stompClient.value || !stompConnected.value) {
+    ElMessage.warning('正在连接聊天室，请稍候')
+    return
+  }
+  if (!imageUrl) {
+    ElMessage.error('图片URL为空，无法发送')
+    return
+  }
+  sending.value = true
+  try {
+    const payload = { msgType: 'image', imageUrl, content: '' }
+    if (replyingTo.value?.id) {
+      payload.quotedMessageId = replyingTo.value.id
+    }
+    console.log('发送图片消息 payload:', payload)
+    stompClient.value.publish({
+      destination: `/app/campfire/${campfireIdOf(activeCampfire.value)}/send`,
+      body: JSON.stringify(payload)
+    })
     replyingTo.value = null
   } catch (e) {
     ElMessage.error('发送失败，请重试')
@@ -759,6 +841,14 @@ onUnmounted(() => {
           class="message-item"
           :class="{ mine: isMine(m) }"
         >
+          <!-- 头像跟随身份：匿名身份后端返回 avatarUrl=null，显示系统默认头像 -->
+          <UserAvatar
+            v-if="!isMine(m)"
+            class="bubble-avatar"
+            :url="m.avatarUrl"
+            :user-id="m.userId ?? m.user_id"
+            :size="36"
+          />
           <div class="bubble">
             <div class="bubble-name">{{ m.anonymousName ?? m.anonymous_name ?? '旅人' }}</div>
             <!-- 引用内容显示 -->
@@ -769,7 +859,17 @@ onUnmounted(() => {
                 <div class="quote-text">{{ m.quotedContent }}</div>
               </div>
             </div>
-            <div class="bubble-content">{{ m.content }}</div>
+            <!-- 文本消息 -->
+            <div v-if="!m.msgType || m.msgType === 'text'" class="bubble-content">{{ m.content }}</div>
+            <!-- 图片消息 -->
+            <div v-else-if="m.msgType === 'image'" class="bubble-image">
+              <el-image
+                :src="m.imageUrl"
+                :preview-src-list="[m.imageUrl]"
+                fit="cover"
+                style="max-width: 200px; max-height: 200px; border-radius: 8px;"
+              />
+            </div>
             <div class="bubble-actions">
               <span class="bubble-time">{{ formatTime(m.createdAt || m.created_at) }}</span>
               <div class="bubble-btns">
@@ -792,6 +892,13 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
+          <UserAvatar
+            v-if="isMine(m)"
+            class="bubble-avatar"
+            :url="m.avatarUrl"
+            :user-id="m.userId ?? m.user_id"
+            :size="36"
+          />
         </div>
       </div>
 
@@ -806,6 +913,14 @@ onUnmounted(() => {
       </div>
 
       <div class="chat-input">
+        <el-button
+          circle
+          :disabled="isBanned"
+          @click="handleSelectImage"
+          title="发送图片"
+        >
+          📷
+        </el-button>
         <el-input
           v-model="inputContent"
           :placeholder="replyingTo ? `回复 ${replyingTo.anonymousName}...` : '写一句温暖的话…'"
@@ -1022,6 +1137,13 @@ onUnmounted(() => {
 }
 .message-item.mine {
   justify-content: flex-end;
+}
+/* 消息头像：昵称身份显示自定义头像，匿名身份显示系统默认头像 */
+.bubble-avatar {
+  margin: 4px 8px 0 0;
+}
+.message-item.mine .bubble-avatar {
+  margin: 4px 0 0 8px;
 }
 .bubble {
   max-width: 70%;

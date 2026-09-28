@@ -6,11 +6,19 @@ import { ElMessage } from 'element-plus'
 import { useUserStore } from '@/stores/user'
 import { useNotificationStore } from '@/stores/notification'
 import { getAutoMode, setAutoMode as setAutoModeApi } from '@/api/echo'
+import { useDevice } from '@/composables/useDevice'
+import MobileTabBar from '@/components/MobileTabBar.vue'
 
 const router = useRouter()
 const route = useRoute()
 const userStore = useUserStore()
 const notificationStore = useNotificationStore()
+
+// 设备检测：isMobile 为 true 时渲染移动端布局（底部 TabBar）
+const { isMobile } = useDevice()
+
+// 当前页面标题（取路由 meta.title，移动端顶部栏展示）
+const pageTitle = computed(() => route.meta?.title || 'glimmer 萤光')
 
 let pollInterval = null
 
@@ -57,6 +65,8 @@ const guestMenuItems = computed(() => [
   { index: '/campfire', label: '篝火' },
   { index: '/ai', label: '树洞' },
   { index: '/garden', label: '花园' },
+  { index: '/articles', label: '交流会' },
+  { index: '/game', label: '小游戏' },
   { index: '/announcements', label: '公告' }
 ])
 // 已登录：显示完整导航菜单
@@ -68,6 +78,8 @@ const menuItems = computed(() => {
     { index: '/campfire', label: '篝火' },
     { index: '/ai', label: '树洞' },
     { index: '/garden', label: '花园' },
+    { index: '/articles', label: '交流会' },
+    { index: '/game', label: '小游戏' },
     { index: '/announcements', label: '公告' },
     { index: '/notifications', label: '通知', isNotification: true },
     { index: '/feedback', label: '意见反馈与申诉' }
@@ -82,6 +94,12 @@ const activeMenu = computed(() => route.path)
 const isCampfire = computed(() => route.path === '/campfire')
 const isDriftBottle = computed(() => route.path === '/driftBottle')
 
+// 需要沉浸式全屏的页面（篝火、登录、注册）：隐藏顶部栏 + 底部 TabBar
+const hideChrome = computed(() => {
+  const path = route.path
+  return isCampfire.value || path === '/login' || path === '/register'
+})
+
 function handleSelect(index) {
   router.push(index)
 }
@@ -94,8 +112,8 @@ function goRegister() {
   router.push('/register')
 }
 
-function handleLogout() {
-  userStore.logout()
+async function handleLogout() {
+  await userStore.logout()
   notificationStore.clear()
   router.push('/login')
 }
@@ -139,7 +157,8 @@ onUnmounted(() => {
 
 <template>
   <el-container class="app-container">
-    <el-header v-if="!isCampfire" class="app-header">
+    <!-- ========== 桌面端顶部导航 ========== -->
+    <el-header v-if="!isMobile && !isCampfire" class="app-header">
       <div class="header-inner">
         <!-- Logo -->
         <div class="logo" @click="router.push('/')">
@@ -185,7 +204,7 @@ onUnmounted(() => {
             </div>
             <el-dropdown @command="(cmd) => cmd === 'logout' && handleLogout()">
               <span class="user-dropdown-trigger">
-                {{ userStore.userInfo?.nickname || userStore.userInfo?.username || '旅人' }}
+                {{ userStore.userInfo?.nickname || '旅人' }}
                 <el-icon><ArrowDown /></el-icon>
               </span>
               <template #dropdown>
@@ -223,9 +242,41 @@ onUnmounted(() => {
       </div>
     </el-header>
 
-    <el-main :class="['app-main', isCampfire ? 'campfire-main' : '', isDriftBottle ? 'drift-bottle-main' : '']">
+    <!-- ========== 移动端顶部导航 ========== -->
+    <el-header v-if="isMobile && !hideChrome" class="mobile-header">
+      <div class="mobile-header-inner">
+        <div class="mobile-logo" @click="router.push('/')">
+          <span class="logo-text">glimmer</span>
+        </div>
+        <div class="mobile-title">{{ pageTitle }}</div>
+        <div class="mobile-header-right">
+          <template v-if="isLoggedIn">
+            <el-badge :value="unreadCount" :hidden="unreadCount === 0" :max="99" class="mobile-notify-badge">
+              <el-button text @click="router.push('/notifications')">
+                <el-icon :size="20"><Bell /></el-icon>
+              </el-button>
+            </el-badge>
+          </template>
+          <template v-else>
+            <el-button size="small" type="primary" @click="goLogin">登录</el-button>
+          </template>
+        </div>
+      </div>
+    </el-header>
+
+    <el-main
+      :class="[
+        'app-main',
+        isCampfire ? 'campfire-main' : '',
+        isDriftBottle ? 'drift-bottle-main' : '',
+        isMobile ? 'mobile-main' : ''
+      ]"
+    >
       <router-view />
     </el-main>
+
+    <!-- ========== 移动端底部 TabBar ========== -->
+    <MobileTabBar v-if="isMobile && !hideChrome" />
   </el-container>
 </template>
 
@@ -330,5 +381,63 @@ onUnmounted(() => {
 .drift-bottle-main {
   max-width: none;
   padding: 0;
+}
+
+/* ========== 移动端布局样式 ========== */
+.mobile-header {
+  background: #fff;
+  border-bottom: 1px solid #f0e6d2;
+  padding: 0;
+  height: 48px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 2px 8px rgba(245, 166, 35, 0.06);
+}
+.mobile-header-inner {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 12px;
+  gap: 8px;
+}
+.mobile-logo {
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.mobile-logo .logo-text {
+  font-size: 18px;
+  font-weight: bold;
+  color: #f5a623;
+  letter-spacing: 0.5px;
+}
+.mobile-title {
+  flex: 1;
+  text-align: center;
+  font-size: 15px;
+  font-weight: 600;
+  color: #303133;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.mobile-header-right {
+  flex-shrink: 0;
+  min-width: 40px;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+.mobile-notify-badge :deep(.el-badge__content) {
+  top: 2px;
+  right: 2px;
+}
+.mobile-main {
+  /* 移动端内容全宽，去除桌面端的最大宽度限制 */
+  max-width: none;
+  padding: 12px;
+  /* 底部留出 TabBar 高度（56px + 安全区） */
+  padding-bottom: calc(72px + env(safe-area-inset-bottom));
 }
 </style>

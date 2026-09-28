@@ -29,7 +29,19 @@ public class CampfireMessage {
 
     private String anonymousName;
 
+    /**
+     * 发送时的头像快照：昵称身份存发送者当时的自定义头像（可能为 NULL），
+     * 匿名身份固定 NULL（前端显示系统默认头像）
+     */
+    private String avatarUrl;
+
     private String content;
+
+    /** 消息类型: text文本/image图片 */
+    private String msgType;
+
+    /** 图片消息URL（msg_type=image 时使用） */
+    private String imageUrl;
 
     /** 被引用的消息ID */
     private Long quotedMessageId;

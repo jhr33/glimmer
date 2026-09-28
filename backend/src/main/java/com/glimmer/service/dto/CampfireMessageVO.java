@@ -14,7 +14,18 @@ public class CampfireMessageVO {
     private Long campfireId;
     private Long userId;
     private String anonymousName;
+
+    /** 发送者头像快照（null = 系统默认头像，前端按 userId 取默认头像） */
+    private String avatarUrl;
+
     private String content;
+
+    /** 消息类型: text文本/image图片 */
+    private String msgType;
+
+    /** 图片消息URL（msgType=image 时使用） */
+    private String imageUrl;
+
     private LocalDateTime createdAt;
 
     /**

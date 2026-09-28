@@ -1,0 +1,93 @@
+# ============================================================
+# glimmer docker-compose 编排文件
+# 服务：mysql（数据库）、backend（后端）、frontend（前端 Nginx）
+# 数据卷：mysql_data（数据库持久化）、uploads_data（上传文件持久化）
+# ============================================================
+
+services:
+  # ---------- MySQL 数据库 ----------
+  mysql:
+    image: mysql:8.0
+    container_name: glimmer-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: glimmer
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      TZ: Asia/Shanghai
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - glimmer-net
+
+  # ---------- 后端 Spring Boot ----------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: glimmer-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql:3306/glimmer?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      SPRING_DATASOURCE_USERNAME: ${MYSQL_USER}
+      SPRING_DATASOURCE_PASSWORD: ${MYSQL_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY}
+      UPLOAD_PATH: /data/glimmer/uploads
+      TZ: Asia/Shanghai
+      # 阿里云短信（手机号注册/登录/绑定验证码）
+      ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID}
+      ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET}
+      # 阿里云 OSS（图片直传：后端仅签发 PostObject V4 签名，前端直传 OSS）
+      ALIYUN_OSS_ACCESS_KEY_ID: ${ALIYUN_OSS_ACCESS_KEY_ID}
+      ALIYUN_OSS_ACCESS_KEY_SECRET: ${ALIYUN_OSS_ACCESS_KEY_SECRET}
+      ALIYUN_OSS_ENDPOINT: ${ALIYUN_OSS_ENDPOINT}
+      ALIYUN_OSS_BUCKET: ${ALIYUN_OSS_BUCKET}
+    ports:
+      - "8080:8080"
+    volumes:
+      - uploads_data:/data/glimmer/uploads
+    networks:
+      - glimmer-net
+
+  # ---------- 前端 Nginx ----------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: glimmer-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    networks:
+      - glimmer-net
+
+# ---------- 数据卷 ----------
+volumes:
+  mysql_data:
+    name: glimmer_mysql_data
+  uploads_data:
+    name: glimmer_uploads_data
+
+# ---------- 网络 ----------
+networks:
+  glimmer-net:
+    name: glimmer-net
+    driver: bridge

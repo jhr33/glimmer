@@ -1,4 +1,5 @@
 import request from '@/utils/request'
+import { buildApiUrl } from '@/utils/baseUrl'
 
 // 开启新会话（消耗1代币）
 export function createConversation() {
@@ -31,7 +32,7 @@ export function sendMessage(conversationId, data) {
  */
 export async function sendMessageFetchStream(conversationId, content, onDelta, signal) {
   const token = sessionStorage.getItem('glimmer_token')
-  const response = await fetch(`/api/ai/conversations/${conversationId}/messages/stream`, {
+  const response = await fetch(buildApiUrl(`/ai/conversations/${conversationId}/messages/stream`), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
