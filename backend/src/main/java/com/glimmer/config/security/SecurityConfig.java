@@ -87,6 +87,10 @@ public class SecurityConfig {
                 // 接口文档
                 .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .requestMatchers("/swagger-ui.html").permitAll()
+                // 健康检查端点：供 systemd/部署脚本/负载均衡探活。
+                // application.yml 已配 management.endpoint.health.show-details=never，
+                // 仅返回 {"status":"UP"}，不泄露数据库等组件细节
+                .requestMatchers("/actuator/health").permitAll()
                 // 管理员接口
                 .requestMatchers("/api/admin/**").hasRole("ADMIN")
                 // 其余接口需登录

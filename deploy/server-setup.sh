@@ -46,11 +46,14 @@ echo "==> [4/6] 以 systemd 方式启动并设置开机自启"
 sudo systemctl enable "$SERVICE"
 sudo systemctl restart "$SERVICE"
 
-echo "==> [5/6] 健康检查（最多等待 90 秒）"
+# 健康判据说明：本脚本接管的是旧 jar，旧版 SecurityConfig 未放行 /actuator/health，
+# 因此用「systemctl active + 8080 端口监听」双条件判定启动成功。
+# 新 jar（已放行 health 端点）的发版健康检查在 deploy.ps1 中用 /actuator/health。
+echo "==> [5/6] 健康检查（active + 8080 端口监听，最多等待 90 秒）"
 HEALTHY=false
 for i in $(seq 1 30); do
   if [ "$(systemctl is-active "$SERVICE")" = "active" ] \
-     && wget -qO- http://127.0.0.1:8080/actuator/health 2>/dev/null | grep -q '"status":"UP"'; then
+     && ss -ltn | grep -q ':8080'; then
     HEALTHY=true
     echo "    后端启动成功（第 $((i*3)) 秒）"
     break
