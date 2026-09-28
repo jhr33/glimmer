@@ -47,8 +47,12 @@ $FrontDir = Join-Path $RepoRoot 'frontend'
 $BackDir  = Join-Path $RepoRoot 'backend'
 
 # ssh/scp 公共参数（数组方式传递，避免引号问题）
+# 注意：ssh 的 host 是独立位置参数，可放进数组末尾；
+# 但 scp 的 host 必须写在 source/target 路径里（user@host:/path），
+# 因此 scp 参数数组不能包含 $Target，否则会被当成多余的源文件
 $Target    = "$User@$Server"
 $SshCommon = @('-i', $Key, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=15', $Target)
+$ScpCommon = @('-i', $Key, '-o', 'StrictHostKeyChecking=accept-new', '-o', 'ConnectTimeout=15')
 
 function Write-Step([string]$msg) { Write-Host "`n==== $msg ====" -ForegroundColor Cyan }
 function Write-Ok([string]$msg)   { Write-Host $msg -ForegroundColor Green }
@@ -64,7 +68,9 @@ function Invoke-Remote([string]$Cmd) {
 
 # 部署前检查：确认服务器已完成 systemd 一次性初始化
 function Assert-ServerReady {
-    $out = & ssh @SshCommon 'systemctl list-unit-files glimmer-backend.service 2>/dev/null | tail -n +2'
+    $out = (& ssh @SshCommon 'systemctl list-unit-files glimmer-backend.service 2>/dev/null | tail -n +2') -join "`n"
+    # 注意：远程输出是多行数组，PowerShell 数组 -notmatch 返回"不匹配元素"而非布尔值，
+    # 必须先 -join 成字符串再做正则判断
     if ($out -notmatch 'glimmer-backend') {
         throw '服务器尚未安装 glimmer-backend 服务，请先在服务器执行 deploy/server-setup.sh（一次性初始化）'
     }
@@ -94,7 +100,7 @@ function Deploy-Backend {
     Write-Host "    产物：$($jar.Name)（$([math]::Round($jar.Length/1MB,1)) MB）"
 
     Write-Step '后端 2/5：上传 jar（先传为 app.jar.new，不碰线上文件）'
-    & scp @SshCommon $jar.FullName "${Target}:$RemoteAppDir/app.jar.new"
+    & scp @ScpCommon $jar.FullName "${Target}:$RemoteAppDir/app.jar.new"
     if ($LASTEXITCODE -ne 0) { throw 'jar 上传失败，请检查网络和密钥' }
 
     Write-Step '后端 3/5：原子替换 app.jar 并重启服务'
@@ -105,7 +111,8 @@ function Deploy-Backend {
     $healthy = $false
     for ($i = 1; $i -le 30; $i++) {
         Start-Sleep -Seconds 3
-        $out = & ssh @SshCommon 'systemctl is-active glimmer-backend; wget -qO- http://127.0.0.1:8080/actuator/health 2>/dev/null || true'
+        # -join 成字符串，避免数组 -match 的元素过滤语义
+        $out = (& ssh @SshCommon 'systemctl is-active glimmer-backend; wget -qO- http://127.0.0.1:8080/actuator/health 2>/dev/null || true') -join "`n"
         if ($out -match 'active' -and $out -match 'UP') { $healthy = $true; break }
         Write-Host "    等待后端启动... 第 $($i*3) 秒"
     }
@@ -142,7 +149,7 @@ function Deploy-Frontend {
     Write-Step '前端 2/4：上传 dist 到临时目录（不碰线上目录）'
     Invoke-Remote 'rm -rf /home/ubuntu/glimmer-dist'
     # scp -r 本地 dist 为远程 glimmer-dist（目标不存在时即拷贝目录本身）
-    & scp -r @SshCommon $dist "${Target}:/home/ubuntu/glimmer-dist"
+    & scp -r @ScpCommon $dist "${Target}:/home/ubuntu/glimmer-dist"
     if ($LASTEXITCODE -ne 0) { throw 'dist 上传失败，请检查网络和密钥' }
     # 上传完整性校验：index.html 必须存在
     Invoke-Remote 'test -f /home/ubuntu/glimmer-dist/index.html'
@@ -152,7 +159,8 @@ function Deploy-Frontend {
     Invoke-Remote 'set -e; sudo rm -rf /var/www/glimmer-old; sudo mv /var/www/glimmer /var/www/glimmer-old; sudo mv /home/ubuntu/glimmer-dist /var/www/glimmer'
 
     Write-Step '前端 4/4：线上 HTTPS 首页校验'
-    $check = & ssh @SshCommon "wget -qO- https://$Domain/ | grep -c id=.app."
+    # grep -c 输出命中行数（0 或正整数）；强转字符串避免数组语义陷阱
+    $check = ((& ssh @SshCommon "wget -qO- https://$Domain/ | grep -c 'id=.app.'") -join '').Trim()
     if ($check -notmatch '^[1-9]') {
         Write-Warn2 '    线上首页校验失败，自动回滚 ...'
         Invoke-Remote 'set -e; sudo rm -rf /var/www/glimmer; sudo mv /var/www/glimmer-old /var/www/glimmer'
