@@ -229,6 +229,9 @@ glimmer:
       sign-name: 恒创联众
       # 号码认证服务模板 Code（100001 = 登录/注册验证码模板，文案：您的验证码为${code}...${min}分钟内有效）
       template-code: "100001"
+      # 内地FC中转（生产/香港服务器使用；本地开发留空则直连阿里云）
+      relay-url: ${GLIMMER_SMS_RELAY_URL:}
+      relay-secret: ${GLIMMER_SMS_RELAY_SECRET:}
       # 验证码有效期（分钟），与模板文案 ${min} 对应
       code-expire-minutes: 5
       # 同一手机号发送间隔（秒）

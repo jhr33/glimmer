@@ -30,6 +30,16 @@ public class AliyunSmsConfig {
     /** 短信模板 Code */
     private String templateCode;
 
+    /**
+     * 内地函数计算（FC）中转地址，如 https://xxx.cn-hangzhou.fcapp.run
+     * 背景：香港服务器到 dypnsapi（106.11.x）网络不通，生产环境经 FC 中转。
+     * 留空则直连（本地开发/内地网络环境使用）。
+     */
+    private String relayUrl;
+
+    /** FC 中转共享密钥（与 FC 环境变量 RELAY_SECRET 一致，防公网滥用） */
+    private String relaySecret;
+
     /** 验证码有效期（分钟），与模板文案 ${min} 对应 */
     private Integer codeExpireMinutes = 5;
 

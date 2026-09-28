@@ -1,7 +1,6 @@
 package com.glimmer.service.impl;
 
 import com.aliyuncs.CommonRequest;
-import com.aliyuncs.CommonResponse;
 import com.aliyuncs.DefaultAcsClient;
 import com.aliyuncs.IAcsClient;
 import com.aliyuncs.http.MethodType;
@@ -18,12 +17,17 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Map;
 
 /**
  * 短信验证码服务实现（阿里云号码认证服务 - 短信认证）
@@ -57,6 +61,11 @@ public class SmsServiceImpl implements SmsService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private IAcsClient acsClient;
+
+    /** 中转调用用的 HTTP 客户端（生产环境经内地 FC 中转访问阿里云短信API） */
+    private final HttpClient relayHttpClient = HttpClient.newBuilder()
+            .connectTimeout(Duration.ofSeconds(5))
+            .build();
 
     public SmsServiceImpl(AliyunSmsConfig smsConfig, StringRedisTemplate redisTemplate,
                           CaptchaService captchaService) {
@@ -122,8 +131,7 @@ public class SmsServiceImpl implements SmsService {
             // 重复发送时旧验证码失效（覆盖策略）
             request.putQueryParameter("DuplicatePolicy", "1");
 
-            CommonResponse response = acsClient.getCommonResponse(request);
-            JsonNode body = objectMapper.readTree(response.getData());
+            JsonNode body = objectMapper.readTree(executeAliyunAction(request));
 
             String respCode = body.path("Code").asText();
             if (!"OK".equals(respCode)) {
@@ -164,8 +172,7 @@ public class SmsServiceImpl implements SmsService {
             request.putQueryParameter("PhoneNumber", phone);
             request.putQueryParameter("VerifyCode", code);
 
-            CommonResponse response = acsClient.getCommonResponse(request);
-            JsonNode body = objectMapper.readTree(response.getData());
+            JsonNode body = objectMapper.readTree(executeAliyunAction(request));
 
             // Code=OK 仅表示接口调用成功，核验结果必须以 Model.VerifyResult 为准
             String verifyResult = body.path("Model").path("VerifyResult").asText();
@@ -187,5 +194,35 @@ public class SmsServiceImpl implements SmsService {
             log.error("验证码核验异常: phone={}, error={}", phone, e.getMessage(), e);
             throw new BusinessException(ErrorCode.SMS_CODE_INVALID);
         }
+    }
+
+    /**
+     * 执行阿里云短信API调用（直连 or FC中转二选一）
+     * <p>
+     * - relayUrl 未配置：直连（本地开发、内地网络环境）
+     * - relayUrl 已配置：POST {action, params} 到内地函数计算中转，
+     *   由 FC 在内地网络内完成阿里云签名调用后原样返回响应 JSON
+     *   （背景：香港服务器到 dypnsapi 106.11.x 网段网络不通）
+     */
+    private String executeAliyunAction(CommonRequest request) throws Exception {
+        String relayUrl = smsConfig.getRelayUrl();
+        if (relayUrl == null || relayUrl.isBlank()) {
+            return acsClient.getCommonResponse(request).getData();
+        }
+        HttpRequest req = HttpRequest.newBuilder()
+                .uri(URI.create(relayUrl))
+                .timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .header("x-relay-secret", smsConfig.getRelaySecret() == null ? "" : smsConfig.getRelaySecret())
+                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(
+                        Map.of("action", request.getSysAction(), "params", request.getQueryParameters()))))
+                .build();
+        HttpResponse<String> resp = relayHttpClient.send(req, HttpResponse.BodyHandlers.ofString());
+        if (resp.statusCode() != 200) {
+            log.error("短信FC中转失败: action={}, status={}, body={}",
+                    request.getSysAction(), resp.statusCode(), resp.body());
+            throw new IllegalStateException("短信中转服务返回 " + resp.statusCode());
+        }
+        return resp.body();
     }
 }
